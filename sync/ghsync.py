@@ -17,6 +17,8 @@
   syncclone --settings s.json --dir syncdir       'sync' 가지 받기(얕게)
   syncpull --settings s.json --repo repo --sync syncdir --data data.json --out appdl   앱에서 올린 사진 → ingest용 파일
   syncclean --settings s.json --repo repo --sync syncdir --data data.json           합쳐진 사진 파일을 sync 가지에서 지우기
+  packsrc  --settings s.json --repo repo --src 폴더           앱 소스(빌드 전 파일) 묶음을 암호화해 dev/src.tgz.enc로
+  unpacksrc --settings s.json --repo repo --out 폴더          dev/src.tgz.enc 풀기
 """
 import argparse, base64, glob, hashlib, hmac, json, os, re, subprocess, sys, unicodedata
 
@@ -423,6 +425,35 @@ def cmd_syncclean(a):
     die('sync 가지에 올리지 못함(나중에 다시)')
 
 
+def cmd_packsrc(a):
+    s = load_settings(a.settings)
+    aes, mac = keys_for(s, a.repo)
+    import tarfile, io
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode='w:gz') as t:
+        for root, dirs, files in os.walk(a.src):
+            dirs[:] = [d for d in dirs if d not in ('node_modules', 'shots', '__pycache__', 'www', 'nightly', 'prodtest')]
+            for f in files:
+                p = os.path.join(root, f)
+                if os.path.getsize(p) > 5 * 1024 * 1024 or f.endswith(('.jpg', '.png')):
+                    continue
+                t.add(p, arcname=os.path.relpath(p, a.src))
+    raw = buf.getvalue()
+    ch = write_if_changed(os.path.join(a.repo, 'dev', 'src.tgz.enc'), seal_bytes(aes, mac, raw))
+    print(json.dumps({'packed': len(raw), 'changed': ch}))
+
+
+def cmd_unpacksrc(a):
+    s = load_settings(a.settings)
+    aes, _ = keys_for(s, a.repo)
+    import tarfile, io
+    raw = open_bytes(aes, open(os.path.join(a.repo, 'dev', 'src.tgz.enc'), 'rb').read())
+    os.makedirs(a.out, exist_ok=True)
+    with tarfile.open(fileobj=io.BytesIO(raw), mode='r:gz') as t:
+        t.extractall(a.out, filter='data')
+    print(json.dumps({'unpacked': a.out}))
+
+
 def main():
     ap = argparse.ArgumentParser()
     sp = ap.add_subparsers(dest='cmd', required=True)
@@ -438,8 +469,10 @@ def main():
     p = sp.add_parser('syncclone'); p.add_argument('--settings', required=True); p.add_argument('--dir', required=True)
     p = sp.add_parser('syncpull'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True); p.add_argument('--data'); p.add_argument('--out', required=True)
     p = sp.add_parser('syncclean'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True); p.add_argument('--data', required=True)
+    p = sp.add_parser('packsrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--src', required=True)
+    p = sp.add_parser('unpacksrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     a = ap.parse_args()
-    {'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
+    {'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
      'keyfile': cmd_keyfile, 'push': cmd_push, 'cfg': cmd_cfg, 'syncinit': cmd_syncinit, 'syncclone': cmd_syncclone,
      'syncpull': cmd_syncpull, 'syncclean': cmd_syncclean}[a.cmd](a)
 
