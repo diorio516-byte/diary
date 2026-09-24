@@ -469,6 +469,104 @@ def _kst_today():
     return _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).date().isoformat()
 
 
+ECON_TAG = ('증시', '산업', '기업', '정책', '부동산', '글로벌', '생활', '금융')
+ECON_KEEP = 30
+
+
+def _dok(v):
+    import datetime as _dt
+    try:
+        _dt.date.fromisoformat(v); return bool(re.match(r'^20\d{2}-\d{2}-\d{2}$', v))
+    except Exception:
+        return False
+
+
+def econ_check(e, today):
+    """오늘의 경제: {"days":[{"d","src","vid","mkd","mk":[{"n","v","c"}],"one","items":[{"t","s","url","tag"}]}]}"""
+    import datetime as _dt
+    if e is None:
+        return None, []
+    if not isinstance(e, dict) or not isinstance(e.get('days'), list):
+        return None, ['econ 형식이 {"days":[...]}가 아님']
+    errs, byd = [], {}
+    cut = (_dt.date.fromisoformat(today) - _dt.timedelta(days=ECON_KEEP)).isoformat()
+    for i, x in enumerate(e['days']):
+        w = f"econ.days[{i}] {x.get('d') if isinstance(x, dict) else ''}"
+        if not isinstance(x, dict):
+            errs.append(w + ': 객체가 아님'); continue
+        d = str(x.get('d', ''))
+        if not _dok(d):
+            errs.append(w + ': d 날짜'); continue
+        if d > today:
+            errs.append(w + ': 앞으로 올 날짜'); continue
+        if d < cut:
+            continue              # 30일 지난 건 정리
+        if d in byd:
+            errs.append(w + ': 같은 날짜가 두 번'); continue
+        o = {'d': d}
+        for k, lim in (('src', 40), ('one', 140)):
+            v = x.get(k) or ''
+            if not isinstance(v, str) or len(v) > lim:
+                errs.append(w + f': {k} {lim}자 이내'); break
+            if v.strip():
+                o[k] = v.strip()
+        else:
+            vid = x.get('vid') or ''
+            if vid and not str(vid).startswith('https://'):
+                errs.append(w + ': vid는 https'); continue
+            if vid:
+                o['vid'] = vid
+            mkd = x.get('mkd') or ''
+            if mkd and (not _dok(str(mkd)) or mkd > d):
+                errs.append(w + ': mkd 날짜'); continue
+            if mkd:
+                o['mkd'] = mkd
+            mk = x.get('mk') or []
+            if not isinstance(mk, list) or len(mk) > 6:
+                errs.append(w + ': mk는 6칸 이하 목록'); continue
+            mko, bad = [], False
+            for m in mk:
+                if not isinstance(m, dict) or not m.get('n') or not m.get('v') or len(str(m['n'])) > 10 or len(str(m['v'])) > 16 or len(str(m.get('c') or '')) > 12:
+                    bad = True; break
+                if m.get('c') and not re.match(r'^[+\-−▲▼]?\s?[\d.,]+\s?(%|원|p|bp)?$', str(m['c'])):
+                    bad = True; break
+                mko.append({k: str(m[k]) for k in ('n', 'v', 'c') if m.get(k)})
+            if bad:
+                errs.append(w + ': mk 칸 형식({"n":"코스피","v":"7,080.92","c":"+0.90%"})'); continue
+            if mko:
+                o['mk'] = mko
+            its = x.get('items')
+            if not isinstance(its, list) or not (1 <= len(its) <= 12):
+                errs.append(w + ': items는 1~12개'); continue
+            io, urls, bad = [], set(), ''
+            for j, it in enumerate(its):
+                if not isinstance(it, dict) or not isinstance(it.get('t'), str) or not it['t'].strip():
+                    bad = f'items[{j}] 제목 없음'; break
+                if len(it['t']) > 90 or len(str(it.get('s') or '')) > 160:
+                    bad = f'items[{j}] 너무 긺(제목 90·요약 160)'; break
+                u = str(it.get('url') or '')
+                if not u.startswith('https://'):
+                    bad = f'items[{j}] url은 https'; break
+                if u in urls:
+                    bad = f'items[{j}] url 겹침'; break
+                urls.add(u)
+                tg = it.get('tag') or ''
+                if tg and tg not in ECON_TAG:
+                    bad = f'items[{j}] tag는 ' + '|'.join(ECON_TAG); break
+                q = {'t': it['t'].strip(), 'url': u}
+                if (it.get('s') or '').strip():
+                    q['s'] = it['s'].strip()
+                if tg:
+                    q['tag'] = tg
+                io.append(q)
+            if bad:
+                errs.append(w + ': ' + bad); continue
+            o['items'] = io
+            byd[d] = o
+    days = sorted(byd.values(), key=lambda x: x['d'], reverse=True)
+    return ({'days': days} if days else None), errs
+
+
 def news_check(n, today):
     import datetime as _dt
     errs = []
@@ -537,6 +635,10 @@ def news_check(n, today):
     items = sorted(keep.values(), key=lambda x: (x['s'], x.get('tm') or '99:99', x['id']))
     ctx = n.get('ctx') if isinstance(n.get('ctx'), dict) else {}
     out = {'v': 1, 'updated': n.get('updated') or '', 'follow': fol, 'ctx': ctx, 'items': items}
+    ec, eerrs = econ_check(n.get('econ'), today)
+    errs += eerrs
+    if ec:
+        out['econ'] = ec
     return out, errs
 
 
@@ -557,7 +659,8 @@ def cmd_newsopen(a):
     it = n.get('items', [])
     print(json.dumps({'opened': a.out, 'items': len(it), 'updated': n.get('updated'), 'follow': n.get('follow'),
                       'todayGames': [f"{x.get('tm','')} {x['t']}" for x in it if x.get('cat') in ('야구', '축구') and x.get('s') == today],
-                      'yesterdayNoResult': [x['id'] for x in it if x.get('cat') in ('야구', '축구') and x.get('s') == y and not x.get('res') and x.get('st') != 'cancel']},
+                      'yesterdayNoResult': [x['id'] for x in it if x.get('cat') in ('야구', '축구') and x.get('s') == y and not x.get('res') and x.get('st') != 'cancel'],
+                      'econDays': [d.get('d') for d in ((n.get('econ') or {}).get('days') or [])][:5]},
                      ensure_ascii=False, indent=1))
 
 
@@ -599,8 +702,18 @@ def cmd_newsseal(a):
                       'new': [f"{x['s']} {x['t']}" for x in new], 'changed': chg[:30], 'removed': len(gone),
                       'todayGames': [f"{x.get('tm','')} {x['t']}" for x in out['items'] if x['cat'] in ('야구', '축구') and x['s'] == today],
                       'yesterdayResults': [f"{x['t']} {x.get('res','?')}" for x in out['items'] if x['cat'] in ('야구', '축구') and x['s'] == y],
-                      'opens': [f"{x['open']} {x['t']}" for x in out['items'] if x.get('open', '')[:10] in (today, tm)]},
+                      'opens': [f"{x['open']} {x['t']}" for x in out['items'] if x.get('open', '')[:10] in (today, tm)],
+                      'econ': econ_brief(out.get('econ'), today)},
                      ensure_ascii=False, indent=1))
+
+
+def econ_brief(ec, today):
+    days = (ec or {}).get('days') or []
+    if not days:
+        return {'days': 0}
+    x = days[0]
+    mk = ' · '.join(f"{m['n']} {m['v']}{'(' + m['c'] + ')' if m.get('c') else ''}" for m in (x.get('mk') or [])[:3])
+    return {'days': len(days), 'latest': x['d'], 'today': x['d'] == today, 'items': len(x['items']), 'mk': mk, 'one': x.get('one', '')}
 
 
 def cmd_newswants(a):
