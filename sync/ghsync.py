@@ -17,6 +17,9 @@
   syncclone --settings s.json --dir syncdir       'sync' 가지 받기(얕게)
   syncpull --settings s.json --repo repo --sync syncdir --data data.json --out appdl   앱에서 올린 사진 → ingest용 파일
   syncclean --settings s.json --repo repo --sync syncdir --data data.json           합쳐진 사진 파일을 sync 가지에서 지우기
+  newsopen --settings s.json --repo repo --out news.json   아침 소식(news.json.enc) 풀기, 없으면 빈 틀
+  newsseal --settings s.json --repo repo --news news.json [--today YYYY-MM-DD]   검사·정리 후 암호화(바뀐 점 요약 출력)
+  newswants --settings s.json --repo repo --sync syncdir   두 사람이 '가고 싶어/같이 볼래' 누른 소식 목록
   packsrc  --settings s.json --repo repo --src 폴더           앱 소스(빌드 전 파일) 묶음을 암호화해 dev/src.tgz.enc로
   unpacksrc --settings s.json --repo repo --out 폴더          dev/src.tgz.enc 풀기
 """
@@ -454,6 +457,171 @@ def cmd_unpacksrc(a):
     print(json.dumps({'unpacked': a.out}))
 
 
+# ---------- 아침 소식(공연·경기) ----------
+NEWS_CAT = ('내한', '국내', '부산', '축제', '야구', '축구')
+NEWS_ST = ('sold', 'on', 'soon', 'tba', 'free', 'cancel', 'done')
+NEWS_FOLLOW = ('KIA', '롯데', '가을야구', '야구대표', '축구대표', '광주FC', '부산아이파크', '해외파')
+NEWS_LIM = {'t': 60, 'lb': 8, 'v': 40, 'city': 12, 'note': 80, 'pre': 60, 'tk': 30, 'tv': 30, 'lg': 16, 'home': 20, 'away': 20, 'win': 20}
+
+
+def _kst_today():
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).date().isoformat()
+
+
+def news_check(n, today):
+    import datetime as _dt
+    errs = []
+    if not isinstance(n, dict) or n.get('v') != 1 or not isinstance(n.get('items'), list):
+        return None, ['맨 위 형식이 {"v":1,"items":[...]}가 아님']
+    fol = n.get('follow') or list(NEWS_FOLLOW)
+    if not isinstance(fol, list) or any(f not in NEWS_FOLLOW for f in fol):
+        errs.append('follow 값이 이상함: ' + json.dumps(fol, ensure_ascii=False))
+    ymd = re.compile(r'^20\d{2}-\d{2}-\d{2}$')
+    def dok(v):
+        try:
+            _dt.date.fromisoformat(v); return bool(ymd.match(v))
+        except Exception:
+            return False
+    keep, seen = {}, set()
+    cut = (_dt.date.fromisoformat(today) - _dt.timedelta(days=45)).isoformat()
+    for i, x in enumerate(n['items']):
+        w = f"items[{i}] {x.get('id') if isinstance(x, dict) else ''}"
+        if not isinstance(x, dict):
+            errs.append(w + ': 객체가 아님'); continue
+        if not re.match(r'^[a-z0-9-]{3,60}$', str(x.get('id', ''))):
+            errs.append(w + ': id 형식'); continue
+        if x.get('cat') not in NEWS_CAT:
+            errs.append(w + ': cat'); continue
+        if not isinstance(x.get('t'), str) or not x['t'].strip():
+            errs.append(w + ': t 없음'); continue
+        if not dok(str(x.get('s', ''))):
+            errs.append(w + ': s 날짜'); continue
+        if not x.get('e'):
+            x['e'] = x['s']
+        if not dok(str(x['e'])) or x['e'] < x['s']:
+            errs.append(w + ': e 날짜'); continue
+        if x.get('st') not in NEWS_ST:
+            errs.append(w + ': st'); continue
+        if x.get('tm') and not re.match(r'^([01]\d|2[0-3]):[0-5]\d$', str(x['tm'])):
+            errs.append(w + ': tm'); continue
+        if x.get('open') and not re.match(r'^20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}$', str(x['open'])):
+            errs.append(w + ': open'); continue
+        for k in ('url', 'src'):
+            if x.get(k) and not str(x[k]).startswith('https://'):
+                errs.append(w + f': {k}는 https'); break
+        else:
+            if x['cat'] in ('야구', '축구'):
+                if not isinstance(x.get('team'), list) or not x['team'] or any(t not in NEWS_FOLLOW for t in x['team']):
+                    errs.append(w + ': team'); continue
+                if x.get('res') and not re.match(r'^\d{1,2}:\d{1,2}$', str(x['res'])):
+                    errs.append(w + ': res'); continue
+            bad = [k for k, lim in NEWS_LIM.items() if isinstance(x.get(k), str) and len(x[k]) > lim]
+            if bad:
+                errs.append(w + ': 너무 긺 ' + ','.join(bad)); continue
+            if re.search(r'\d[\d,]*\s*원', json.dumps(x, ensure_ascii=False)):
+                errs.append(w + ': 가격(원)은 넣지 않음'); continue
+            if not x.get('lb'):
+                x['lb'] = x['t'][:6]
+            if not x.get('added') or not dok(str(x['added'])):
+                x['added'] = today
+            for k in list(x):
+                if x[k] in ('', None):
+                    del x[k]
+            if x['e'] < cut:
+                continue          # 45일 지난 건 정리
+            if x['id'] in seen:
+                errs.append(w + ': id 겹침'); continue
+            seen.add(x['id'])
+            keep[x['id']] = x
+    items = sorted(keep.values(), key=lambda x: (x['s'], x.get('tm') or '99:99', x['id']))
+    ctx = n.get('ctx') if isinstance(n.get('ctx'), dict) else {}
+    out = {'v': 1, 'updated': n.get('updated') or '', 'follow': fol, 'ctx': ctx, 'items': items}
+    return out, errs
+
+
+def cmd_newsopen(a):
+    s = load_settings(a.settings)
+    aes, _ = keys_for(s, a.repo)
+    p = os.path.join(a.repo, 'news.json.enc')
+    if os.path.exists(p):
+        raw = open_bytes(aes, open(p, 'rb').read())
+        n = json.loads(raw)
+    else:
+        n = {'v': 1, 'updated': '', 'follow': list(NEWS_FOLLOW), 'ctx': {}, 'items': []}
+    with open(a.out, 'w', encoding='utf-8') as f:
+        json.dump(n, f, ensure_ascii=False, indent=0)
+    today = _kst_today()
+    t1 = __import__('datetime').date.fromisoformat(today)
+    y = (t1 - __import__('datetime').timedelta(days=1)).isoformat()
+    it = n.get('items', [])
+    print(json.dumps({'opened': a.out, 'items': len(it), 'updated': n.get('updated'), 'follow': n.get('follow'),
+                      'todayGames': [f"{x.get('tm','')} {x['t']}" for x in it if x.get('cat') in ('야구', '축구') and x.get('s') == today],
+                      'yesterdayNoResult': [x['id'] for x in it if x.get('cat') in ('야구', '축구') and x.get('s') == y and not x.get('res') and x.get('st') != 'cancel']},
+                     ensure_ascii=False, indent=1))
+
+
+def cmd_newsseal(a):
+    s = load_settings(a.settings)
+    aes, mac = keys_for(s, a.repo)
+    today = a.today or _kst_today()
+    n = json.load(open(a.news, encoding='utf-8'))
+    out, errs = news_check(n, today)
+    if out is None or errs:
+        print(json.dumps({'ok': False, 'errors': errs[:40]}, ensure_ascii=False, indent=1)); sys.exit(1)
+    import datetime as _dt
+    out['updated'] = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).replace(microsecond=0).isoformat()
+    raw = json.dumps(out, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    if len(raw) > 400 * 1024:
+        print(json.dumps({'ok': False, 'errors': [f'너무 큼 {len(raw)//1024}KB (400KB 이하)']}, ensure_ascii=False)); sys.exit(1)
+    p = os.path.join(a.repo, 'news.json.enc')
+    old = {}
+    if os.path.exists(p):
+        try:
+            old = {x['id']: x for x in json.loads(open_bytes(aes, open(p, 'rb').read())).get('items', [])}
+        except Exception:
+            old = {}
+    new = [x for x in out['items'] if x['id'] not in old]
+    chg = []
+    for x in out['items']:
+        o = old.get(x['id'])
+        if o:
+            d = [k for k in ('s', 'e', 'tm', 'st', 'open', 'res', 'v') if o.get(k) != x.get(k)]
+            if d:
+                chg.append({'id': x['id'], 't': x['t'], 'fields': d})
+    gone = [k for k in old if k not in {x['id'] for x in out['items']}]
+    with open(p, 'wb') as f:
+        f.write(seal_bytes(aes, mac, raw))
+    t1 = _dt.date.fromisoformat(today)
+    tm = (t1 + _dt.timedelta(days=1)).isoformat()
+    y = (t1 - _dt.timedelta(days=1)).isoformat()
+    print(json.dumps({'ok': True, 'items': len(out['items']), 'kb': len(raw) // 1024,
+                      'new': [f"{x['s']} {x['t']}" for x in new], 'changed': chg[:30], 'removed': len(gone),
+                      'todayGames': [f"{x.get('tm','')} {x['t']}" for x in out['items'] if x['cat'] in ('야구', '축구') and x['s'] == today],
+                      'yesterdayResults': [f"{x['t']} {x.get('res','?')}" for x in out['items'] if x['cat'] in ('야구', '축구') and x['s'] == y],
+                      'opens': [f"{x['open']} {x['t']}" for x in out['items'] if x.get('open', '')[:10] in (today, tm)]},
+                     ensure_ascii=False, indent=1))
+
+
+def cmd_newswants(a):
+    s = load_settings(a.settings)
+    key = sync_key(s, a.repo)
+    recs, _ = sync_records(key, a.sync)
+    last = {}
+    for r in recs.values():
+        if r.get('k') != 'gw' or r.get('del') or not r.get('ref'):
+            continue
+        k = (r['ref'], r.get('w'))
+        if k not in last or (r.get('t') or 0) > (last[k].get('t') or 0):
+            last[k] = r
+    out = {}
+    for (ref, w), r in last.items():
+        if r.get('v'):
+            o = out.setdefault(ref, {'ref': ref, 't': r.get('tt'), 's': r.get('s'), 'who': []})
+            o['who'].append({'j': '재준', 'h': '현지'}.get(w, w))
+    print(json.dumps({'wants': sorted(out.values(), key=lambda x: x.get('s') or '')}, ensure_ascii=False, indent=1))
+
+
 def main():
     ap = argparse.ArgumentParser()
     sp = ap.add_subparsers(dest='cmd', required=True)
@@ -469,10 +637,13 @@ def main():
     p = sp.add_parser('syncclone'); p.add_argument('--settings', required=True); p.add_argument('--dir', required=True)
     p = sp.add_parser('syncpull'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True); p.add_argument('--data'); p.add_argument('--out', required=True)
     p = sp.add_parser('syncclean'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True); p.add_argument('--data', required=True)
+    p = sp.add_parser('newsopen'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
+    p = sp.add_parser('newsseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--news', required=True); p.add_argument('--today')
+    p = sp.add_parser('newswants'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True)
     p = sp.add_parser('packsrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--src', required=True)
     p = sp.add_parser('unpacksrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     a = ap.parse_args()
-    {'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
+    {'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'newswants': cmd_newswants, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
      'keyfile': cmd_keyfile, 'push': cmd_push, 'cfg': cmd_cfg, 'syncinit': cmd_syncinit, 'syncclone': cmd_syncclone,
      'syncpull': cmd_syncpull, 'syncclean': cmd_syncclean}[a.cmd](a)
 
