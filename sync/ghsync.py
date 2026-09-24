@@ -12,6 +12,11 @@
   pages    --settings s.json --repo repo [--app app.html] [--page 이름=경로 ...]   화면 파일 암호화해 넣기
   keyfile  --settings s.json --repo repo          k.json 만들기(처음 한 번; 있으면 그대로)
   push     --settings s.json --repo repo --msg 메시지     커밋하고 올리기
+  cfg      --settings s.json --repo repo          바로 공유 설정(cfg.json.enc: 토큰·공유 키) 만들기/갱신
+  syncinit --settings s.json                      원격에 'sync' 가지가 없으면 만들기
+  syncclone --settings s.json --dir syncdir       'sync' 가지 받기(얕게)
+  syncpull --settings s.json --repo repo --sync syncdir --data data.json --out appdl   앱에서 올린 사진 → ingest용 파일
+  syncclean --settings s.json --repo repo --sync syncdir --data data.json           합쳐진 사진 파일을 sync 가지에서 지우기
 """
 import argparse, base64, glob, hashlib, hmac, json, os, re, subprocess, sys, unicodedata
 
@@ -49,13 +54,17 @@ def cmd_settings(a):
     out = {}
     for line in txt.splitlines():
         line = unescape_md(line.strip())
-        m = re.match(r'^(GitHub\s*아이디|토큰|둘만의\s*비밀번호|이전\s*비밀번호)\s*[:：]\s*(.*)$', line)
+        m = re.match(r'^(GitHub\s*아이디|토큰\s*만료|토큰|둘만의\s*비밀번호|이전\s*비밀번호)\s*[:：]\s*(.*)$', line)
         if not m:
             continue
-        key = {'G': 'user', '토': 'token', '둘': 'pw', '이': 'old_pw'}[m.group(1)[0]]
+        g = m.group(1)
+        key = 'token_exp' if g.startswith('토큰') and '만료' in g else {'G': 'user', '토': 'token', '둘': 'pw', '이': 'old_pw'}[g[0]]
         val = m.group(2).strip()
         if key in ('user', 'token'):
             val = val.replace(' ', '')
+        if key == 'token_exp':
+            mm = re.search(r'(20\d{2})[-./년\s]+(\d{1,2})[-./월\s]+(\d{1,2})', val)
+            val = f'{mm.group(1)}-{int(mm.group(2)):02d}-{int(mm.group(3)):02d}' if mm else ''
         if val:
             out[key] = val
     out['user'] = (out.get('user') or DEFAULT_USER).lower()
@@ -239,6 +248,181 @@ def cmd_pages(a):
     print(json.dumps({'sealed': changed}, ensure_ascii=False))
 
 
+# ---------- 바로 공유 ----------
+def cfg_path(repo):
+    return os.path.join(repo, 'cfg.json.enc')
+
+
+def read_cfg(repo, aes):
+    p = cfg_path(repo)
+    if not os.path.exists(p):
+        return None
+    try:
+        return json.loads(open_bytes(aes, open(p, 'rb').read()))
+    except Exception:
+        return None
+
+
+def cmd_cfg(a):
+    s = load_settings(a.settings)
+    aes, mac = keys_for(s, a.repo)
+    old = read_cfg(a.repo, aes) or {}
+    osync = old.get('sync') or {}
+    key = osync.get('syncKey') or base64.b64encode(os.urandom(32)).decode()
+    cfg = {'v': 1, 'sync': {'owner': s['user'], 'repo': s['repo'], 'branch': 'sync', 'token': s['token'], 'syncKey': key,
+                            'tokenExp': s.get('token_exp') or osync.get('tokenExp') or ''}}
+    raw = json.dumps(cfg, ensure_ascii=False, sort_keys=True).encode('utf-8')
+    changed = write_if_changed(cfg_path(a.repo), seal_bytes(aes, mac, raw))
+    print(json.dumps({'cfg': ('new' if not old else 'updated') if changed else 'same', 'tokenExp': cfg['sync']['tokenExp'],
+                      'keyKept': bool(osync.get('syncKey'))}, ensure_ascii=False))
+
+
+def remote_url(s):
+    return f"https://github.com/{s['user']}/{s['repo']}.git"
+
+
+def cmd_syncinit(a):
+    s = load_settings(a.settings)
+    import tempfile
+    d = tempfile.mkdtemp(prefix='hjsync-')
+    git(d, 'init', '-q', '-b', 'sync')
+    git(d, 'remote', 'add', 'origin', remote_url(s))
+    out = git(d, 'ls-remote', '--heads', 'origin', 'sync', s=s)
+    if 'refs/heads/sync' in out:
+        print(json.dumps({'sync': 'exists'})); return
+    with open(os.path.join(d, 'README.md'), 'w', encoding='utf-8') as f:
+        f.write('# 바로 공유\n\n두 폰이 암호를 걸어 올리는 기록이에요. 사람이 고치지 않아요.\n')
+    git(d, 'config', 'user.name', '우리 다이어리 밤 기록')
+    git(d, 'config', 'user.email', 'noreply@anthropic.com')
+    git(d, 'add', '-A')
+    git(d, 'commit', '-q', '-m', '바로 공유 시작')
+    git(d, 'push', 'origin', 'HEAD:sync', s=s)
+    print(json.dumps({'sync': 'created'}))
+
+
+def cmd_syncclone(a):
+    s = load_settings(a.settings)
+    if os.path.exists(a.dir):
+        die(f'{a.dir} 이미 있음')
+    os.makedirs(a.dir)
+    git(a.dir, 'init', '-q', '-b', 'sync')
+    git(a.dir, 'remote', 'add', 'origin', remote_url(s))
+    git(a.dir, 'fetch', '-q', '--depth', '1', 'origin', 'sync', s=s)
+    git(a.dir, 'checkout', '-q', '-B', 'sync', 'FETCH_HEAD')
+    git(a.dir, 'config', 'user.name', '우리 다이어리 밤 기록')
+    git(a.dir, 'config', 'user.email', 'noreply@anthropic.com')
+    n = len(glob.glob(os.path.join(a.dir, 'sync', '**', '*.enc'), recursive=True))
+    print(json.dumps({'cloned': 'sync', 'files': n}, ensure_ascii=False))
+
+
+def sync_key(s, repo):
+    aes, _ = keys_for(s, repo)
+    cfg = read_cfg(repo, aes)
+    if not cfg:
+        die('cfg.json.enc 없음(cfg 먼저)')
+    return base64.b64decode(cfg['sync']['syncKey'])
+
+
+def sync_open(key, blob):
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    return AESGCM(key).decrypt(blob[:12], blob[12:], None)
+
+
+def sync_records(key, syncdir):
+    recs = {}
+    bad = []
+    for p in sorted(glob.glob(os.path.join(syncdir, 'sync', '[jh]', '*.enc'))):
+        if os.path.basename(p).startswith('me-'):
+            continue  # 나만 보기 기록은 열지 않는다
+        try:
+            obj = json.loads(sync_open(key, open(p, 'rb').read()))
+        except Exception:
+            bad.append(os.path.relpath(p, syncdir)); continue
+        for rid, r in (obj.get('recs') or {}).items():
+            if not isinstance(r, dict):
+                continue
+            cur = recs.get(rid)
+            if not cur or (r.get('t') or 0) > (cur.get('t') or 0):
+                recs[rid] = r
+    return recs, bad
+
+
+def cmd_syncpull(a):
+    s = load_settings(a.settings)
+    key = sync_key(s, a.repo)
+    data = json.load(open(a.data, encoding='utf-8')) if a.data else {}
+    merged = data.get('merged') or {}
+    recs, bad = sync_records(key, a.sync)
+    os.makedirs(a.out, exist_ok=True)
+    files, missing = [], []
+    for rid, r in sorted(recs.items()):
+        if r.get('k') != 'photo' or r.get('del') or rid in merged:
+            continue
+        fp = os.path.join(a.sync, r.get('f') or '')
+        if not r.get('f') or not os.path.exists(fp):
+            missing.append(rid); continue
+        try:
+            raw = sync_open(key, open(fp, 'rb').read())
+        except Exception:
+            bad.append(r.get('f')); continue
+        d = r.get('d') if re.match(r'^20\d{2}-\d{2}-\d{2}$', str(r.get('d'))) else None
+        if not d:
+            missing.append(rid); continue
+        o = {'id': 'app:' + rid, 'title': f'app-{rid}.jpg', 'content': base64.b64encode(raw).decode(),
+             'app': {'rec': rid, 'who': r.get('w'), 'd': d, 't': r.get('tm') or '', 'cap': (r.get('cap') or '')[:60]}}
+        out = os.path.join(a.out, f'app-{len(files) + 1:03d}.json')
+        with open(out, 'w', encoding='utf-8') as f:
+            json.dump(o, f, ensure_ascii=False)
+        files.append(out)
+    kinds = {}
+    for r in recs.values():
+        if not r.get('del'):
+            k = f"{r.get('w')}:{r.get('k')}"
+            kinds[k] = kinds.get(k, 0) + 1
+    # 연필 초안 참고용: 최근 이틀 두 사람이 남긴 한 줄·간 곳·먹은 것
+    today = now_kst_date()
+    recent = []
+    for r in recs.values():
+        if r.get('del') or r.get('p') or r.get('k') not in ('note', 'place', 'food', 'thx', 'dlog'):
+            continue
+        if str(r.get('d') or r.get('dd') or '') >= (today - __import__('datetime').timedelta(days=2)).isoformat():
+            recent.append({'k': r['k'], 'w': r.get('w'), 'd': r.get('d') or r.get('dd'), 's': (r.get('s') or r.get('n') or r.get('ref') or '')[:80]})
+    print(json.dumps({'appPhotos': len(files), 'files': files, 'missing': missing, 'badFiles': bad, 'records': kinds,
+                      'recent': recent[:40]}, ensure_ascii=False, indent=1))
+
+
+def now_kst_date():
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).date()
+
+
+def cmd_syncclean(a):
+    s = load_settings(a.settings)
+    key = sync_key(s, a.repo)
+    data = json.load(open(a.data, encoding='utf-8'))
+    merged = data.get('merged') or {}
+    recs, _ = sync_records(key, a.sync)
+    gone = []
+    for rid, r in recs.items():
+        if r.get('k') == 'photo' and rid in merged and r.get('f'):
+            fp = os.path.join(a.sync, r['f'])
+            if os.path.exists(fp):
+                git(a.sync, 'rm', '-q', r['f'])
+                gone.append(r['f'])
+    if not gone:
+        print(json.dumps({'cleaned': 0})); return
+    git(a.sync, 'commit', '-q', '-m', f'합친 사진 {len(gone)}장 정리')
+    for i in range(3):
+        r = subprocess.run(['git', 'push', 'origin', 'HEAD:sync'], cwd=a.sync, capture_output=True, text=True,
+                           env=dict(os.environ, GIT_TERMINAL_PROMPT='0', GIT_CONFIG_COUNT='1',
+                                    GIT_CONFIG_KEY_0='http.https://github.com/.extraHeader',
+                                    GIT_CONFIG_VALUE_0='Authorization: Basic ' + base64.b64encode(('x-access-token:' + s['token']).encode()).decode()))
+        if r.returncode == 0:
+            print(json.dumps({'cleaned': len(gone)})); return
+        git(a.sync, 'pull', '-q', '--rebase', 'origin', 'sync', s=s)
+    die('sync 가지에 올리지 못함(나중에 다시)')
+
+
 def main():
     ap = argparse.ArgumentParser()
     sp = ap.add_subparsers(dest='cmd', required=True)
@@ -249,9 +433,15 @@ def main():
     p = sp.add_parser('pages'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--app'); p.add_argument('--page', action='append')
     p = sp.add_parser('keyfile'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True)
     p = sp.add_parser('push'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--msg', required=True)
+    p = sp.add_parser('cfg'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True)
+    p = sp.add_parser('syncinit'); p.add_argument('--settings', required=True)
+    p = sp.add_parser('syncclone'); p.add_argument('--settings', required=True); p.add_argument('--dir', required=True)
+    p = sp.add_parser('syncpull'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True); p.add_argument('--data'); p.add_argument('--out', required=True)
+    p = sp.add_parser('syncclean'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True); p.add_argument('--data', required=True)
     a = ap.parse_args()
     {'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
-     'keyfile': cmd_keyfile, 'push': cmd_push}[a.cmd](a)
+     'keyfile': cmd_keyfile, 'push': cmd_push, 'cfg': cmd_cfg, 'syncinit': cmd_syncinit, 'syncclone': cmd_syncclone,
+     'syncpull': cmd_syncpull, 'syncclean': cmd_syncclean}[a.cmd](a)
 
 
 if __name__ == '__main__':

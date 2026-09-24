@@ -10,6 +10,8 @@ Claude가 쓴 연필 초안(review.json)과 두 사람의 펜 문서를 data.jso
   python3 pipeline.py pens    --data build/data.json --j pen_j.txt --h pen_h.txt --today 2026-09-24 --out build/data.json
   python3 pipeline.py check   --data build/data.json --build build
 
+앱에서 바로 올린 사진은 ghsync.py syncpull이 만든 app-*.json을 ingest에 함께 넘긴다(tk="app", merged에 기록).
+
 규칙
 - 날짜: 사진 안의 찍은 시각(EXIF) > 파일 이름의 날짜_시각(재준 갤럭시 원본, 스크린샷)
         > 13자리 숫자·KakaoTalk_ 이름(카톡으로 받은 날) > 드라이브에 올린 날.
@@ -234,18 +236,25 @@ def cmd_ingest(a):
         et, model = exif_info(raw)
         im = ImageOps.exif_transpose(raw)
         h = dhash(im)
-        owner = (meta.get(fid) or {}).get("owner") or ""
-        who = who_of(model, title, owner, cfg)
-        if et:
-            tk, when = "exif", et
+        app = o.get("app") if isinstance(o.get("app"), dict) else None
+        if app and re.match(r"^20\d{2}-\d{2}-\d{2}$", str(app.get("d"))):
+            # 앱에서 바로 올린 사진: 날짜·시각·누구는 앱 기록 그대로
+            who = app.get("who") if app.get("who") in ("j", "h") else "j"
+            tk, d, t = "app", app["d"], (app.get("t") or "")[:5]
         else:
-            kind, when = name_time(title)
-            if when:
-                tk = kind
+            app = None
+            owner = (meta.get(fid) or {}).get("owner") or ""
+            who = who_of(model, title, owner, cfg)
+            if et:
+                tk, when = "exif", et
             else:
-                tk, when = "upload", upload_time((meta.get(fid) or {}).get("createdTime") or "")
-        d = when.strftime("%Y-%m-%d")
-        t = when.strftime("%H:%M") if tk in ("exif", "name", "shot") else ""
+                kind, when = name_time(title)
+                if when:
+                    tk = kind
+                else:
+                    tk, when = "upload", upload_time((meta.get(fid) or {}).get("createdTime") or "")
+            d = when.strftime("%Y-%m-%d")
+            t = when.strftime("%H:%M") if tk in ("exif", "name", "shot") else ""
         # 같은 사진인지
         best, bd = None, 99
         for pid, p in photos.items():
@@ -259,6 +268,8 @@ def cmd_ingest(a):
                 best, bd = pid, x
         if best is not None and bd <= DUP_DIST:
             rec = {"id": fid, "title": title, "same": best, "dist": bd}
+            if app:
+                rec["rec"] = app["rec"]
             old = photos.get(best)
             if old and tk == "exif" and old.get("tk") != "exif":
                 wb, (w, hh) = webp_bytes(im)
@@ -278,6 +289,9 @@ def cmd_ingest(a):
         pend["photos"][pid] = {"d": d, "t": t, "tk": tk, "who": who, "cap": "", "w": w, "h": hh,
                                "th": thumb_uri(im), "hash": h, "f": "p/" + pid + ".webp",
                                "src": fid, "title": title, "model": model}
+        if app:
+            pend["photos"][pid]["rec"] = app["rec"]
+            pend["photos"][pid]["cap"] = (app.get("cap") or "")[:60]
     # 접촉 시트 (Claude가 보고 쓰기 위한 것)
     ids = sorted(pend["photos"], key=lambda k: (pend["photos"][k]["d"], pend["photos"][k]["t"] or "99", k))
     sheets = []
@@ -335,18 +349,21 @@ def cmd_apply(a):
     sync = data.setdefault("sync", {})
     processed = sync.setdefault("processed", {})
     rp = rev.get("photos") or {}
+    merged = data.setdefault("merged", {})
     kept, dropped = [], []
     for pid, p in pend.get("photos", {}).items():
         r = rp.get(pid)
         if r is None:
             r = {"keep": True}
-        if not r.get("keep", True):
+        if not r.get("keep", True) and p.get("tk") != "app":   # 앱에서 직접 올린 사진은 빼지 않는다
             processed[p["src"]] = "excluded:" + (r.get("why") or "")
             dropped.append(pid)
             continue
         rec = {k: p[k] for k in ("d", "t", "tk", "who", "w", "h", "th", "hash", "f")}
-        rec["cap"] = (r.get("cap") or "").strip()[:60]
-        if r.get("d") and re.match(r"^20\d{2}-\d{2}-\d{2}$", r["d"]) and p["tk"] not in ("exif", "name", "shot"):
+        rec["cap"] = (r.get("cap") or p.get("cap") or "").strip()[:60]
+        if p.get("rec"):
+            merged[p["rec"]] = pid
+        if r.get("d") and re.match(r"^20\d{2}-\d{2}-\d{2}$", r["d"]) and p["tk"] not in ("exif", "name", "shot", "app"):
             rec["d"] = r["d"]  # 받은 날 사진은 Claude가 근거 있을 때만 옮길 수 있다
         photos[pid] = rec
         processed[p["src"]] = "kept:" + pid
@@ -354,6 +371,9 @@ def cmd_apply(a):
         if pid not in day["photos"]:
             day["photos"].append(pid)
         kept.append(pid)
+    for u in pend.get("upgrades", []) + pend.get("dups", []):
+        if u.get("rec") and u.get("same") in photos:
+            merged[u["rec"]] = u["same"]
     for u in pend.get("upgrades", []):
         old = photos.get(u["same"])
         processed[u["id"]] = "dup:" + u["same"]

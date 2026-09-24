@@ -1,9 +1,9 @@
-/* 우리 다이어리: 암호를 푼 화면·사진을 폰 안에서만 만들어 보여 주는 서비스 워커 */
+/* 우리 다이어리: 암호를 푼 화면·사진을 폰 안에서만 만들어 보여 주는 서비스 워커 (v2) */
 'use strict';
 const SHELL='hj-shell-v1', ENC='hj-enc-v1';
 const SHELL_FILES=['./','index.html','manifest.webmanifest','k.json','icons/icon-192.png','icons/icon-512.png','icons/apple-touch-icon.png'];
 const BASE=new URL('./',self.location).pathname;           // 예: /diary/
-const PROT=/^(app|season1|movies|tarot|lover)\.html$|^data\.json$|^p\/[^/]+\.webp$/;
+const PROT=/^(app|season1|movies|tarot|lover)\.html$|^(data|cfg)\.json$|^p\/[^/]+\.webp$/;   // v2: cfg.json(바로 공유 설정)
 const TYPES={html:'text/html; charset=utf-8',json:'application/json; charset=utf-8',webp:'image/webp'};
 
 self.addEventListener('install',e=>{self.skipWaiting();e.waitUntil(caches.open(SHELL).then(c=>c.addAll(SHELL_FILES)).catch(()=>{}));});
