@@ -3,7 +3,7 @@
 const SHELL='hj-shell-v1', ENC='hj-enc-v1';
 const SHELL_FILES=['./','index.html','manifest.webmanifest','k.json','icons/icon-192.png','icons/icon-512.png','icons/apple-touch-icon.png'];
 const BASE=new URL('./',self.location).pathname;           // 예: /diary/
-const PROT=/^(app|season1|movies|tarot|lover)\.html$|^(data|cfg|news)\.json$|^p\/[^/]+\.webp$/;   // v2: cfg.json(바로 공유 설정), news.json(아침 소식)
+const PROT=/^(app|season1|movies|tarot|lover)\.html$|^(data|cfg|news|fresh)\.json$|^p\/[^/]+\.webp$/;   // v2: cfg.json(바로 공유 설정), news.json(아침 소식)
 const TYPES={html:'text/html; charset=utf-8',json:'application/json; charset=utf-8',webp:'image/webp'};
 
 self.addEventListener('install',e=>{self.skipWaiting();e.waitUntil(caches.open(SHELL).then(c=>c.addAll(SHELL_FILES)).catch(()=>{}));});

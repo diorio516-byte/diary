@@ -20,6 +20,8 @@
   newsopen --settings s.json --repo repo --out news.json   아침 소식(news.json.enc) 풀기, 없으면 빈 틀
   newsseal --settings s.json --repo repo --news news.json [--today YYYY-MM-DD]   검사·정리 후 암호화(바뀐 점 요약 출력)
   newswants --settings s.json --repo repo --sync syncdir   두 사람이 '가고 싶어/같이 볼래' 누른 소식 목록
+  freshopen --settings s.json --repo repo --out fresh.json   매주 새 소재(fresh.json.enc) 풀기, 없으면 빈 틀
+  freshseal --settings s.json --repo repo --fresh fresh.json   검사 후 암호화
   packsrc  --settings s.json --repo repo --src 폴더           앱 소스(빌드 전 파일) 묶음을 암호화해 dev/src.tgz.enc로
   unpacksrc --settings s.json --repo repo --out 폴더          dev/src.tgz.enc 풀기
 """
@@ -458,7 +460,7 @@ def cmd_unpacksrc(a):
 
 
 # ---------- 아침 소식(공연·경기) ----------
-NEWS_CAT = ('내한', '국내', '부산', '축제', '야구', '축구')
+NEWS_CAT = ('내한', '국내', '충청', '호남', '축제', '야구', '축구')
 NEWS_ST = ('sold', 'on', 'soon', 'tba', 'free', 'cancel', 'done')
 NEWS_FOLLOW = ('KIA', '롯데', '가을야구', '야구대표', '축구대표', '광주FC', '부산아이파크', '해외파')
 NEWS_LIM = {'t': 60, 'lb': 8, 'v': 40, 'city': 12, 'note': 80, 'pre': 60, 'tk': 30, 'tv': 30, 'lg': 16, 'home': 20, 'away': 20, 'win': 20}
@@ -735,6 +737,97 @@ def cmd_newswants(a):
     print(json.dumps({'wants': sorted(out.values(), key=lambda x: x.get('s') or '')}, ensure_ascii=False, indent=1))
 
 
+# ---------- 매주 새 소재(fresh.json.enc) ----------
+FRESH_MAX = {'balance': 400, 'quiz': 200, 'imagine': 200, 'dates': 120}
+DATE_ENUM = {'io': ('both', 'in', 'out'), 'time': ('1h', 'day', 'half', 'trip'), 'wx': ('any', 'clear', 'cold', 'hot', 'rain'), 'when': ('any', 'day', 'night', 'weekend'),
+             'tag': ('계절', '공연', '만들기', '맛집', '바다', '산책', '액티비티', '야경', '여행', '장거리', '전시', '집데이트', '축제', '카페'), 'reg': ('', '청주', '광주', '충청', '호남', '중간')}
+
+
+def fresh_check(f, today):
+    errs = []
+    if not isinstance(f, dict):
+        return None, ['맨 위 형식이 {"v":1,...}가 아님']
+    out = {'v': 1, 'updated': '', 'week': str(f.get('week') or ''), 'balance': [], 'quiz': [], 'imagine': [], 'dates': [], 'log': []}
+    seen = set()
+    for i, b in enumerate(f.get('balance') or []):
+        w = f'balance[{i}]'
+        if not isinstance(b, dict) or not re.match(r'^fb-[a-z0-9-]{2,30}$', str(b.get('id', ''))):
+            errs.append(w + ': id는 fb-로 시작(영문 소문자·숫자·-)'); continue
+        if b['id'] in seen:
+            errs.append(w + ': id 겹침'); continue
+        if not all(isinstance(b.get(k), str) and 1 <= len(b[k]) <= 40 for k in ('a', 'b')) or not isinstance(b.get('c'), str) or not 1 <= len(b['c']) <= 6:
+            errs.append(w + ': a·b(40자)·c(6자) 확인'); continue
+        seen.add(b['id']); out['balance'].append({'id': b['id'], 'a': b['a'], 'b': b['b'], 'c': b['c'], 'wk': str(b.get('wk') or out['week'])})
+    for i, q in enumerate(f.get('quiz') or []):
+        w = f'quiz[{i}]'
+        if not isinstance(q, dict) or not re.match(r'^fz-[a-z0-9-]{2,30}$', str(q.get('id', ''))):
+            errs.append(w + ': id는 fz-로 시작'); continue
+        if q['id'] in seen:
+            errs.append(w + ': id 겹침'); continue
+        if not isinstance(q.get('q'), str) or not 1 <= len(q['q']) <= 70 or not isinstance(q.get('o'), list) or len(q['o']) != 4 or not all(isinstance(o, str) and 1 <= len(o) <= 16 for o in q['o']):
+            errs.append(w + ': q(70자)·o 4개(16자) 확인'); continue
+        seen.add(q['id']); out['quiz'].append({'id': q['id'], 'q': q['q'], 'o': q['o'], 'c': str(q.get('c') or '새로')[:6], 'wk': str(q.get('wk') or out['week'])})
+    for i, sline in enumerate(f.get('imagine') or []):
+        if not isinstance(sline, str) or not 5 <= len(sline) <= 90:
+            errs.append(f'imagine[{i}]: 5~90자 문장'); continue
+        if sline not in out['imagine']:
+            out['imagine'].append(sline)
+    for i, d in enumerate(f.get('dates') or []):
+        w = f'dates[{i}]'
+        if not isinstance(d, dict) or not re.match(r'^dtf-[a-z0-9-]{2,30}$', str(d.get('id', ''))):
+            errs.append(w + ': id는 dtf-로 시작'); continue
+        if d['id'] in seen:
+            errs.append(w + ': id 겹침'); continue
+        if not isinstance(d.get('t'), str) or not 2 <= len(d['t']) <= 16 or not isinstance(d.get('d'), str) or not 10 <= len(d['d']) <= 90:
+            errs.append(w + ': t(16자)·d(10~90자) 확인'); continue
+        bad = [k for k, vs in DATE_ENUM.items() if d.get(k, '' if k == 'reg' else None) not in vs]
+        if bad or not isinstance(d.get('season'), list) or any(x not in ('봄', '여름', '가을', '겨울') for x in d['season']):
+            errs.append(w + ': ' + ','.join(bad or ['season'])); continue
+        if re.search(r'\d[\d,]*\s*원', json.dumps(d, ensure_ascii=False)):
+            errs.append(w + ': 가격(원)은 넣지 않음'); continue
+        seen.add(d['id']); out['dates'].append({k: d.get(k, '') for k in ('id', 't', 'd', 'io', 'time', 'season', 'wx', 'when', 'tag', 'reg', 'place', 'area')} | {'wk': str(d.get('wk') or out['week'])})
+    for k, lim in FRESH_MAX.items():
+        if len(out[k]) > lim:
+            out[k] = out[k][-lim:]        # 오래된 것부터 정리
+    for l in (f.get('log') or [])[-30:]:
+        if isinstance(l, str) and len(l) <= 120:
+            out['log'].append(l)
+    if re.search(r'\d[\d,]*\s*원', json.dumps(out, ensure_ascii=False)):
+        errs.append('가격(원)은 넣지 않음')
+    return out, errs
+
+
+def cmd_freshopen(a):
+    s = load_settings(a.settings)
+    aes, _ = keys_for(s, a.repo)
+    p = os.path.join(a.repo, 'fresh.json.enc')
+    f = json.loads(open_bytes(aes, open(p, 'rb').read())) if os.path.exists(p) else {'v': 1, 'updated': '', 'week': '', 'balance': [], 'quiz': [], 'imagine': [], 'dates': [], 'log': []}
+    with open(a.out, 'w', encoding='utf-8') as fh:
+        json.dump(f, fh, ensure_ascii=False, indent=0)
+    print(json.dumps({'opened': a.out, 'week': f.get('week'), 'updated': f.get('updated'), 'counts': {k: len(f.get(k) or []) for k in ('balance', 'quiz', 'imagine', 'dates')},
+                      'lastIds': {k: [x.get('id') for x in (f.get(k) or [])[-3:]] for k in ('balance', 'quiz', 'dates')}, 'log': (f.get('log') or [])[-3:]}, ensure_ascii=False, indent=1))
+
+
+def cmd_freshseal(a):
+    s = load_settings(a.settings)
+    aes, mac = keys_for(s, a.repo)
+    today = a.today or _kst_today()
+    f = json.load(open(a.fresh, encoding='utf-8'))
+    out, errs = fresh_check(f, today)
+    if out is None or errs:
+        print(json.dumps({'ok': False, 'errors': errs[:40]}, ensure_ascii=False, indent=1)); sys.exit(1)
+    import datetime as _dt
+    out['updated'] = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).replace(microsecond=0).isoformat()
+    raw = json.dumps(out, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    if len(raw) > 300 * 1024:
+        print(json.dumps({'ok': False, 'errors': [f'너무 큼 {len(raw)//1024}KB (300KB 이하)']}, ensure_ascii=False)); sys.exit(1)
+    with open(os.path.join(a.repo, 'fresh.json.enc'), 'wb') as fh:
+        fh.write(seal_bytes(aes, mac, raw))
+    wk = out['week']
+    print(json.dumps({'ok': True, 'week': wk, 'kb': len(raw) // 1024, 'thisWeek': {k: len([x for x in out[k] if isinstance(x, dict) and x.get('wk') == wk]) for k in ('balance', 'quiz', 'dates')},
+                      'imagine': len(out['imagine']), 'total': {k: len(out[k]) for k in ('balance', 'quiz', 'imagine', 'dates')}}, ensure_ascii=False, indent=1))
+
+
 def main():
     ap = argparse.ArgumentParser()
     sp = ap.add_subparsers(dest='cmd', required=True)
@@ -753,10 +846,12 @@ def main():
     p = sp.add_parser('newsopen'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     p = sp.add_parser('newsseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--news', required=True); p.add_argument('--today')
     p = sp.add_parser('newswants'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True)
+    p = sp.add_parser('freshopen'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
+    p = sp.add_parser('freshseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--fresh', required=True); p.add_argument('--today')
     p = sp.add_parser('packsrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--src', required=True)
     p = sp.add_parser('unpacksrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     a = ap.parse_args()
-    {'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'newswants': cmd_newswants, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
+    {'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
      'keyfile': cmd_keyfile, 'push': cmd_push, 'cfg': cmd_cfg, 'syncinit': cmd_syncinit, 'syncclone': cmd_syncclone,
      'syncpull': cmd_syncpull, 'syncclean': cmd_syncclean}[a.cmd](a)
 
