@@ -13,12 +13,15 @@
   폰에서 비밀번호를 한 번 넣으면 서비스 워커가 폰 안에서만 풀어 보여 준다.
 - 실제 앱 소스(빌드 전 파일, 설명서, 시험 스크립트, 인계 노트)는 `dev/src.tgz.enc` 에 암호화돼 있다.
 - 최근 작업: 달력·모아 보기 중심 v2, 바로 공유, 오늘의 소식/경제 카드, 잠·집중 타이머 제거.
+- 09-26 Cowork: 청주·광주로 지역 전환, 먹을 곳·잘 곳, 내기·놀이·활동 기록, 오늘 할 거, 영상 게시, 매주 새 소재(`fresh.json`).
+- Cowork와 Claude Code가 같은 저장소를 함께 쓴다. 작업 전에 `main` 을 먼저 받아 합친다.
 
 ## 3. 주요 기능
 - 잠금 화면(`index.html`): 비밀번호 → PBKDF2로 열쇠 만들기 → IndexedDB에 보관, 설치 안내
 - 앱(`app.html`): 달력, 날짜별 사진·연필(Claude 초안)·펜(두 사람 기록), 모아 보기, 바로 공유
 - 부속 화면: `season1.html`, `movies.html`, `tarot.html`, `lover.html`
 - 아침 소식(`news.json`): 공연·축제·야구·축구 일정, 오늘의 경제 지표·기사
+- 매주 새 소재(`fresh.json`): `ghsync.py freshopen`/`freshseal` 로 풀고 잠근다
 - 앱에서 올린 사진은 원격 `sync` 가지로 올라가고, 밤 작업이 합친다.
 
 ## 4. 기술과 구조
@@ -29,7 +32,7 @@
 | `k.json` | PBKDF2 salt·반복 수·확인값(비밀번호 검사용) | 예 |
 | `manifest.webmanifest`, `icons/` | PWA 설치 정보 | 예 |
 | `lib/leaflet.*` | 지도 라이브러리 | 예 |
-| `*.html.enc`, `data.json.enc`, `cfg.json.enc`, `news.json.enc`, `p/*.webp.enc` | 화면·기록·설정·사진 | 아니오 |
+| `*.html.enc`, `data.json.enc`, `cfg.json.enc`, `news.json.enc`, `fresh.json.enc`, `p/*.webp.enc` | 화면·기록·설정·사진 | 아니오 |
 | `dev/src.tgz.enc` | 앱 소스 묶음 | 아니오 |
 | `dev/srcbox.py` | 소스 묶음 풀기/잠그기(Claude Code용, `DIARY_PW` 사용) | 예 |
 | `sync/ghsync.py` | 암호화·저장소 동기화 명령 모음 | 예 |
