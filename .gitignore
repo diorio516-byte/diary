@@ -1,0 +1,14 @@
+# 이 저장소는 공개다. 풀린(평문) 소스·기록·설정은 절대 올리지 않는다.
+work/
+*.settings.json
+s.json
+settings.json
+!.claude/settings.json
+data.json
+news.json
+cfg.json
+fresh.json
+__pycache__/
+*.pyc
+.venv/
+venv/
