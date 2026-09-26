@@ -433,12 +433,13 @@ def cmd_syncclean(a):
 def cmd_packsrc(a):
     s = load_settings(a.settings)
     aes, mac = keys_for(s, a.repo)
-    import tarfile, io
+    import tarfile, io, gzip
     buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode='w:gz') as t:
+    # 같은 소스면 같은 묶음이 나오게(순서 고정, gzip 시각 0) — 바뀐 게 없으면 커밋도 없음
+    with gzip.GzipFile(fileobj=buf, mode='wb', mtime=0) as gz, tarfile.open(fileobj=gz, mode='w') as t:
         for root, dirs, files in os.walk(a.src):
-            dirs[:] = [d for d in dirs if d not in ('node_modules', 'shots', '__pycache__', 'www', 'nightly', 'prodtest')]
-            for f in files:
+            dirs[:] = sorted(d for d in dirs if d not in ('node_modules', 'shots', '__pycache__', 'www', 'nightly', 'prodtest'))
+            for f in sorted(files):
                 p = os.path.join(root, f)
                 if os.path.getsize(p) > 5 * 1024 * 1024 or f.endswith(('.jpg', '.png')):
                     continue
