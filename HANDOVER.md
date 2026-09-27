@@ -14,6 +14,7 @@
 - 실제 앱 소스(빌드 전 파일, 설명서, 시험 스크립트, 인계 노트)는 `dev/src.tgz.enc` 에 암호화돼 있다.
 - 최근 작업: 달력·모아 보기 중심 v2, 바로 공유, 오늘의 소식/경제 카드, 잠·집중 타이머 제거.
 - 09-26 Cowork: 청주·광주로 지역 전환, 먹을 곳·잘 곳, 내기·놀이·활동 기록, 오늘 할 거, 영상 게시, 매주 새 소재(`fresh.json`).
+- 09-27 Claude Code(v9): 안심식당 전체 찾기, 한국관광 100선 도장판, 하루 데이트 코스 24, 먹을 곳·잘 곳 교차 조사, 우리 집(신축 반전세 후보, `home.json.enc`). 자세한 건 소스 묶음의 HANDOFF.md v9.
 - Cowork와 Claude Code가 같은 저장소를 함께 쓴다. 작업 전에 `main` 을 먼저 받아 합친다.
 
 ## 3. 주요 기능
@@ -32,7 +33,7 @@
 | `k.json` | PBKDF2 salt·반복 수·확인값(비밀번호 검사용) | 예 |
 | `manifest.webmanifest`, `icons/` | PWA 설치 정보 | 예 |
 | `lib/leaflet.*` | 지도 라이브러리 | 예 |
-| `*.html.enc`, `data.json.enc`, `cfg.json.enc`, `news.json.enc`, `fresh.json.enc`, `p/*.webp.enc` | 화면·기록·설정·사진 | 아니오 |
+| `*.html.enc`, `data.json.enc`, `cfg.json.enc`, `news.json.enc`, `fresh.json.enc`, `home.json.enc`, `p/*.webp.enc` | 화면·기록·설정·사진·우리 집 | 아니오 |
 | `dev/src.tgz.enc` | 앱 소스 묶음 | 아니오 |
 | `dev/srcbox.py` | 소스 묶음 풀기/잠그기(Claude Code용, `DIARY_PW` 사용) | 예 |
 | `sync/ghsync.py` | 암호화·저장소 동기화 명령 모음 | 예 |
