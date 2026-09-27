@@ -278,10 +278,32 @@ def cmd_cfg(a):
     key = osync.get('syncKey') or base64.b64encode(os.urandom(32)).decode()
     cfg = {'v': 1, 'sync': {'owner': s['user'], 'repo': s['repo'], 'branch': 'sync', 'token': s['token'], 'syncKey': key,
                             'tokenExp': s.get('token_exp') or osync.get('tokenExp') or ''}}
+    if old.get('ntfy'):  # 알림 주제(ntfy)는 그대로 둔다
+        cfg['ntfy'] = old['ntfy']
     raw = json.dumps(cfg, ensure_ascii=False, sort_keys=True).encode('utf-8')
     changed = write_if_changed(cfg_path(a.repo), seal_bytes(aes, mac, raw))
     print(json.dumps({'cfg': ('new' if not old else 'updated') if changed else 'same', 'tokenExp': cfg['sync']['tokenExp'],
                       'keyKept': bool(osync.get('syncKey'))}, ensure_ascii=False))
+
+
+def cmd_notify(a):
+    """두 폰(또는 한쪽)에 짧은 알림을 보낸다. 주제 이름은 cfg.json의 ntfy에서 읽는다. 내용은 짧게, 기록 본문은 넣지 않는다."""
+    s = load_settings(a.settings)
+    aes, _ = keys_for(s, a.repo)
+    n = (read_cfg(a.repo, aes) or {}).get('ntfy') or {}
+    if not (n.get('j') and n.get('h')):
+        print(json.dumps({'sent': 0, 'note': '알림 주제가 아직 없음'}, ensure_ascii=False)); return
+    import urllib.request
+    who = ['j', 'h'] if a.to == 'both' else [a.to]
+    sent = 0
+    for w in who:
+        body = json.dumps({'topic': n[w], 'title': a.title or '우리 다이어리', 'message': a.msg[:300], 'priority': 3, 'tags': ['sparkles']}, ensure_ascii=False).encode('utf-8')
+        try:
+            req = urllib.request.Request((n.get('server') or 'https://ntfy.sh').rstrip('/'), data=body, headers={'Content-Type': 'application/json'})
+            urllib.request.urlopen(req, timeout=20).read(); sent += 1
+        except Exception as e:
+            print(json.dumps({'warn': f'{w} 알림 실패: {type(e).__name__}'}, ensure_ascii=False))
+    print(json.dumps({'sent': sent}, ensure_ascii=False))
 
 
 def remote_url(s):
@@ -869,10 +891,11 @@ def main():
     p = sp.add_parser('newswants'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True)
     p = sp.add_parser('freshopen'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     p = sp.add_parser('freshseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--fresh', required=True); p.add_argument('--today')
+    p = sp.add_parser('notify'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--to', choices=('j', 'h', 'both'), default='both'); p.add_argument('--title'); p.add_argument('--msg', required=True)
     p = sp.add_parser('packsrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--src', required=True)
     p = sp.add_parser('unpacksrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     a = ap.parse_args()
-    {'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
+    {'notify': cmd_notify, 'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
      'keyfile': cmd_keyfile, 'push': cmd_push, 'cfg': cmd_cfg, 'syncinit': cmd_syncinit, 'syncclone': cmd_syncclone,
      'syncpull': cmd_syncpull, 'syncclean': cmd_syncclean}[a.cmd](a)
 
