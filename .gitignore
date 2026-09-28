@@ -12,3 +12,7 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# v18 매주 쌓이는 자료: 풀린 누적 파일(lib/world)은 올리지 않는다
+lib.json
+world.json

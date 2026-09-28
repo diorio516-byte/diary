@@ -34,6 +34,7 @@
 - 부속 화면: `season1.html`, `movies.html`, `tarot.html`, `lover.html`
 - 아침 소식(`news.json`): 공연·축제·야구·축구 일정, 오늘의 경제 지표·기사
 - 매주 새 소재(`fresh.json`): `ghsync.py freshopen`/`freshseal` 로 풀고 잠근다
+- 매주 쌓이는 자료(v18): 책(`lib.json`)·해외여행(`world.json`)을 매주 더한다. `ghsync.py libopen`/`libseal`, `worldopen`/`worldseal` (검사 후 암호화). 자세한 건 소스 묶음의 HANDOFF.md v18
 - 앱에서 올린 사진은 원격 `sync` 가지로 올라가고, 밤 작업이 합친다.
 
 ## 4. 기술과 구조
@@ -45,6 +46,7 @@
 | `manifest.webmanifest`, `icons/` | PWA 설치 정보 | 예 |
 | `lib/leaflet.*` | 지도 라이브러리 | 예 |
 | `*.html.enc`, `data.json.enc`, `cfg.json.enc`, `news.json.enc`, `fresh.json.enc`, `home.json.enc`, `p/*.webp.enc` | 화면·기록·설정·사진·우리 집 | 아니오 |
+| `lib.json.enc`, `world.json.enc` | 매주 쌓이는 책·해외여행(v18, 예약 작업이 `ghsync.py libseal`/`worldseal` 로 올림) | 아니오 |
 | `dev/src.tgz.enc` | 앱 소스 묶음 | 아니오 |
 | `dev/srcbox.py` | 소스 묶음 풀기/잠그기(Claude Code용, `DIARY_PW` 사용) | 예 |
 | `sync/ghsync.py` | 암호화·저장소 동기화 명령 모음 | 예 |
