@@ -24,6 +24,7 @@
   freshseal --settings s.json --repo repo --fresh fresh.json   검사 후 암호화
   libopen  --settings s.json --repo repo --out lib.json     매주 쌓이는 책(lib.json.enc) 풀기, 없으면 빈 틀
   libseal  --settings s.json --repo repo --in lib.json [--base content/books.json] [--sync syncdir]   검사·정리 후 암호화(ok·errors·counts)
+  plcopen/plcseal  매주 장소(v22) plc.json — --base content/places.json (먹을 곳·잘 곳 새 곳·재확인·순서표·출처 장부)
   worldopen --settings s.json --repo repo --out world.json  매주 쌓이는 해외여행(world.json.enc) 풀기, 없으면 빈 틀
   worldseal --settings s.json --repo repo --in world.json [--base content/trips.json] [--sync syncdir]  검사·정리 후 암호화
   packsrc  --settings s.json --repo repo --src 폴더           앱 소스(빌드 전 파일) 묶음을 암호화해 dev/src.tgz.enc로
@@ -765,7 +766,8 @@ def cmd_newswants(a):
 
 
 # ---------- 매주 새 소재(fresh.json.enc) ----------
-FRESH_MAX = {'balance': 400, 'quiz': 200, 'imagine': 200, 'dates': 120, 'courses': 60, 'books': 30}
+FRESH_MAX = {'balance': 1500, 'quiz': 600, 'imagine': 600, 'dates': 1000, 'courses': 200, 'books': 30}   # v22: 쌓이도록 크게(재준 요청 「데이터량 늘리기」)
+FRESH_MAX_KB = 2 * 1024
 COURSE_K = ('see', 'do', 'eat', 'cafe', 'stay', 'move')
 DATE_ENUM = {'io': ('both', 'in', 'out'), 'time': ('1h', 'day', 'half', 'trip'), 'wx': ('any', 'clear', 'cold', 'hot', 'rain'), 'when': ('any', 'day', 'night', 'weekend'),
              'tag': ('계절', '공연', '만들기', '맛집', '바다', '산책', '액티비티', '야경', '여행', '장거리', '전시', '집데이트', '축제', '카페'), 'reg': ('', '청주', '광주', '충청', '호남', '중간')}
@@ -891,8 +893,11 @@ def cmd_freshseal(a):
     import datetime as _dt
     out['updated'] = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).replace(microsecond=0).isoformat()
     raw = json.dumps(out, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
-    if len(raw) > 300 * 1024:
-        print(json.dumps({'ok': False, 'errors': [f'너무 큼 {len(raw)//1024}KB (300KB 이하)']}, ensure_ascii=False)); sys.exit(1)
+    while len(raw) > FRESH_MAX_KB * 1024 and len(out['courses']) > 24:   # 넘치면 오래된 코스부터(코스가 가장 큼)
+        out['courses'] = out['courses'][1:]
+        raw = json.dumps(out, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    if len(raw) > FRESH_MAX_KB * 1024:
+        print(json.dumps({'ok': False, 'errors': [f'너무 큼 {len(raw)//1024}KB ({FRESH_MAX_KB}KB 이하)']}, ensure_ascii=False)); sys.exit(1)
     with open(os.path.join(a.repo, 'fresh.json.enc'), 'wb') as fh:
         fh.write(seal_bytes(aes, mac, raw))
     wk = out['week']
@@ -1030,6 +1035,8 @@ def _load_base(path, key):
         return None
     try:
         b = json.load(open(path, encoding='utf-8'))
+        if key == 'places' and 'places' not in b:
+            return (b.get('food') or []) + (b.get('stay') or [])   # content/places.json
         return b.get(key) or []
     except Exception as e:
         die(f'--base 읽기 실패: {type(e).__name__}')
@@ -1322,6 +1329,79 @@ def _size_kb(o):
     return len(json.dumps(o, ensure_ascii=False, separators=(',', ':')).encode('utf-8')) / 1024
 
 
+
+# ---------- 매주 장소(v22): plc.json.enc — 먹을 곳·잘 곳 새 곳 + 재확인(폐업·이전) + 증거 보강 + 순서표 + 출처 장부 ----------
+PLC_MAX_KB = 3 * 1024
+PLC_WEEK_CAP = 200
+PLC_FCATS = ('한식', '고기', '국밥·탕', '면', '중식', '일식', '양식', '분식', '카페', '브런치')
+PLC_SCATS = ('호텔', '모텔', '독채')
+PLC_PATCH_K = {'vf', 'st', 'wk', 'note', 'addr', 'url', 'open', 'vsrc', 'sc', 'badge', 'plat', 'bluer', 'src'}
+DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
+
+def plc_check(f, base=None, keep=frozenset(), max_kb=PLC_MAX_KB):
+    errs, info = [], {'pruned': 0, 'prunedWeeks': []}
+    if not isinstance(f, dict) or f.get('v') != 1:
+        return None, ['맨 위 형식이 {"v":1,"weeks":[],"places":[],"patch":{},"rank":{},"ledger":{}} 가 아님'], info
+    for k in f:
+        if k not in ('v', 'updated', 'dow', 'weeks', 'places', 'patch', 'rank', 'ledger'):
+            errs.append(f'모르는 칸 "{k}"')
+    weeks = _weeks_check(f, 'plc', errs)
+    wkset = {w['wk'] for w in weeks}
+    base_ids = {str(x.get('id')) for x in (base or [])}
+    places, ids = [], set()
+    for i, x in enumerate(f.get('places') or []):
+        w = f'places[{i}]'
+        m = re.match(r'^plw-(\d{4}w\d{2})-(\d{3})$', str((x or {}).get('id', '')))
+        if not isinstance(x, dict) or not m:
+            errs.append(w + ': id 는 plw-<주>-NNN'); continue
+        if _wk_slug(x.get('wk')) != m.group(1) or x['wk'] not in wkset:
+            errs.append(w + ': wk 가 id·weeks 와 안 맞음'); continue
+        if x['id'] in ids or x['id'] in base_ids:
+            errs.append(w + f': id 겹침 {x["id"]}'); continue
+        if x.get('city') not in ('청주', '광주') or x.get('kind') not in ('food', 'stay') or x.get('cat') not in (PLC_FCATS if x.get('kind') == 'food' else PLC_SCATS):
+            errs.append(w + ': city(청주·광주)·kind(food·stay)·cat 확인'); continue
+        if not _txt(x.get('n'), 1, 40) or not _txt(x.get('addr'), 4, 80) or not isinstance(x.get('km'), (int, float)) or not 0 <= x['km'] <= 20.5:
+            errs.append(w + ': n(40자)·addr(80자)·km(0~20) 확인'); continue
+        src = _src_list(x.get('src') or [], w, errs, 2, 6)
+        if src is None:
+            continue
+        if PRICE_RE.search(json.dumps(x, ensure_ascii=False)) or any(k in x for k in ('price', 'cost', '가격')):
+            errs.append(w + ': 장소에는 가격을 넣지 않음'); continue
+        if not isinstance(x.get('sc'), (int, float)) or not DATE_RE.match(str(x.get('vf') or '')):
+            errs.append(w + ': sc(숫자)·vf(날짜) 필요'); continue
+        ids.add(x['id'])
+        places.append(dict(x) | {'src': src})
+    for wk in wkset:
+        n = sum(1 for x in places if x['wk'] == wk)
+        if n > PLC_WEEK_CAP:
+            errs.append(f'{wk}: 한 주 새 곳 {n} — {PLC_WEEK_CAP}곳까지')
+    known = base_ids | ids
+    patch = {}
+    for i, p in (f.get('patch') or {}).items():
+        w = f'patch[{i}]'
+        if base is not None and i not in known:
+            errs.append(w + ': 없는 장소 id'); continue
+        if not isinstance(p, dict) or set(p) - PLC_PATCH_K:
+            errs.append(w + f': 칸은 {sorted(PLC_PATCH_K)} 만'); continue
+        if p.get('st') not in (None, 'ok', 'closed', 'moved', 'unsure') or (p.get('vf') and not DATE_RE.match(str(p['vf']))):
+            errs.append(w + ': st(ok·closed·moved·unsure)·vf(날짜) 확인'); continue
+        if PRICE_RE.search(json.dumps(p, ensure_ascii=False)):
+            errs.append(w + ': 가격 글자'); continue
+        patch[i] = p
+    rank = {}
+    for i, r in (f.get('rank') or {}).items():
+        if not (isinstance(r, list) and len(r) == 2 and isinstance(r[0], int) and r[1] in (0, 1)):
+            errs.append(f'rank[{i}]: [순서, 0|1]'); break
+        rank[i] = r
+    led = f.get('ledger') or {}
+    if not isinstance(led, dict) or len(json.dumps(led, ensure_ascii=False)) > 200 * 1024:
+        errs.append('ledger 는 200KB 이하 {…}')
+    out = {'v': 1, 'updated': str(f.get('updated') or ''), 'dow': f.get('dow') or '수', 'weeks': weeks, 'places': places, 'patch': patch, 'rank': rank, 'ledger': led}
+    for w in out['weeks']:
+        w['n'] = sum(1 for x in places if x['wk'] == w['wk'])
+    return out, errs, info
+
 def _prune(out, key, keep, max_kb, info, slim=None):
     """크기 한도를 넘으면 오래된 주부터 정리. ①(여행지) 오래된 주는 기본 일정만 남김 ②그래도 넘으면 오래된 주를 통째로 뺌.
     두 사람 기록이 가리키는 id(keep)와 가장 새 주는 남긴다."""
@@ -1357,6 +1437,8 @@ WEEKLY = {
             'empty': lambda: {'v': 1, 'updated': '', 'dow': '', 'weeks': [], 'books': []}},
     'world': {'file': 'world.json.enc', 'items': 'trips', 'check': world_check, 'max': WORLD_MAX_KB, 'pre': 'trw-', 'base': 'trips',
               'empty': lambda: {'v': 1, 'updated': '', 'dow': '', 'fx': {}, 'weeks': [], 'trips': [], 'patch': {}}},
+    'plc': {'file': 'plc.json.enc', 'items': 'places', 'check': plc_check, 'max': PLC_MAX_KB, 'pre': 'plw-', 'base': 'places',
+            'empty': lambda: {'v': 1, 'updated': '', 'dow': '수', 'weeks': [], 'places': [], 'patch': {}, 'rank': {}, 'ledger': {'dom': {}, 'rot': 0, 'cand': []}}},
 }
 
 
@@ -1419,6 +1501,8 @@ def cmd_libopen(a): weekly_open('lib', a)
 def cmd_libseal(a): weekly_seal('lib', a)
 def cmd_worldopen(a): weekly_open('world', a)
 def cmd_worldseal(a): weekly_seal('world', a)
+def cmd_plcopen(a): weekly_open('plc', a)
+def cmd_plcseal(a): weekly_seal('plc', a)
 
 
 def main():
@@ -1441,16 +1525,16 @@ def main():
     p = sp.add_parser('newswants'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True)
     p = sp.add_parser('freshopen'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     p = sp.add_parser('freshseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--fresh', required=True); p.add_argument('--today')
-    for nm in ('libopen', 'worldopen'):
+    for nm in ('libopen', 'worldopen', 'plcopen'):
         p = sp.add_parser(nm); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
-    for nm in ('libseal', 'worldseal'):
+    for nm in ('libseal', 'worldseal', 'plcseal'):
         p = sp.add_parser(nm); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--in', required=True)
         p.add_argument('--base', help='앱 소스 content/books.json·trips.json (unpacksrc 로 푼 것) — id·이름 겹침 검사'); p.add_argument('--sync', help='syncclone 한 폴더 — 두 사람 기록이 가리키는 것은 정리하지 않음')
     p = sp.add_parser('notify'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--to', choices=('j', 'h', 'both'), default='both'); p.add_argument('--title'); p.add_argument('--msg', required=True)
     p = sp.add_parser('packsrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--src', required=True)
     p = sp.add_parser('unpacksrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     a = ap.parse_args()
-    {'libopen': cmd_libopen, 'libseal': cmd_libseal, 'worldopen': cmd_worldopen, 'worldseal': cmd_worldseal, 'notify': cmd_notify, 'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
+    {'libopen': cmd_libopen, 'libseal': cmd_libseal, 'worldopen': cmd_worldopen, 'worldseal': cmd_worldseal, 'plcopen': cmd_plcopen, 'plcseal': cmd_plcseal, 'notify': cmd_notify, 'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
      'keyfile': cmd_keyfile, 'push': cmd_push, 'cfg': cmd_cfg, 'syncinit': cmd_syncinit, 'syncclone': cmd_syncclone,
      'syncpull': cmd_syncpull, 'syncclean': cmd_syncclean}[a.cmd](a)
 
