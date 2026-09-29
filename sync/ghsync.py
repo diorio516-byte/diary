@@ -1337,6 +1337,7 @@ PLC_FCATS = ('한식', '고기', '국밥·탕', '면', '중식', '일식', '양�
 PLC_SCATS = ('호텔', '모텔', '독채')
 PLC_PATCH_K = {'vf', 'st', 'wk', 'note', 'addr', 'url', 'open', 'vsrc', 'sc', 'badge', 'plat', 'bluer', 'src'}
 DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+PLC_CLAUDE_BLOCK = re.compile(r'(?i)diningcode\.com|tripadvisor\.|yna\.co\.kr|tripinfo\.co\.kr|daangn\.com|tabling\.co\.kr|redtable\.|localmap\.co\.kr|jidoro\.com|skweb\.cjsmarttour')   # 2026-W40 robots 확인
 
 
 def plc_check(f, base=None, keep=frozenset(), max_kb=PLC_MAX_KB):
@@ -1397,6 +1398,9 @@ def plc_check(f, base=None, keep=frozenset(), max_kb=PLC_MAX_KB):
     led = f.get('ledger') or {}
     if not isinstance(led, dict) or len(json.dumps(led, ensure_ascii=False)) > 200 * 1024:
         errs.append('ledger 는 200KB 이하 {…}')
+    bad = PLC_CLAUDE_BLOCK.search(json.dumps({'p': places, 'x': patch}, ensure_ascii=False))
+    if bad:
+        errs.append(f'robots 가 Claude 봇을 막는 출처가 들어 있음: {bad.group(0)}')
     out = {'v': 1, 'updated': str(f.get('updated') or ''), 'dow': f.get('dow') or '수', 'weeks': weeks, 'places': places, 'patch': patch, 'rank': rank, 'ledger': led}
     for w in out['weeks']:
         w['n'] = sum(1 for x in places if x['wk'] == w['wk'])
