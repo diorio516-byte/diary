@@ -31,7 +31,7 @@ except Exception:
     pass
 
 KST = dt.timezone(dt.timedelta(hours=9))
-LONG, QUAL, TH = 1280, 72, 128
+LONG, QUAL, TH = 2048, 85, 128   # v24: 1280·72 → 2048·85(재준 요청 「화질이 깨지지 않게」)
 FILE_CAP = 2000         # GitHub 저장소로 옮김(2026-09-24). 사진 칸은 넉넉함, 1GB 저장소 한도 안에서 시즌마다 책으로 묶기
 DUP_DIST = 5
 JAEJUN_EMAIL = "diorio516@gmail.com"
