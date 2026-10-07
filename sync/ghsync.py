@@ -766,7 +766,7 @@ def cmd_newswants(a):
 
 
 # ---------- 매주 새 소재(fresh.json.enc) ----------
-FRESH_MAX = {'balance': 1500, 'quiz': 600, 'imagine': 600, 'dates': 1000, 'courses': 200, 'books': 30}   # v22: 쌓이도록 크게(재준 요청 「데이터량 늘리기」)
+FRESH_MAX = {'balance': 1500, 'quiz': 600, 'imagine': 600, 'dates': 1000, 'courses': 200, 'books': 30, 'wed': 30}   # v22: 쌓이도록 크게(재준 요청 「데이터량 늘리기」)
 FRESH_MAX_KB = 2 * 1024
 COURSE_K = ('see', 'do', 'eat', 'cafe', 'stay', 'move')
 DATE_ENUM = {'io': ('both', 'in', 'out'), 'time': ('1h', 'day', 'half', 'trip'), 'wx': ('any', 'clear', 'cold', 'hot', 'rain'), 'when': ('any', 'day', 'night', 'weekend'),
@@ -777,7 +777,7 @@ def fresh_check(f, today):
     errs = []
     if not isinstance(f, dict):
         return None, ['맨 위 형식이 {"v":1,...}가 아님']
-    out = {'v': 1, 'updated': '', 'week': str(f.get('week') or ''), 'balance': [], 'quiz': [], 'imagine': [], 'dates': [], 'courses': [], 'books': [], 'log': []}
+    out = {'v': 1, 'updated': '', 'week': str(f.get('week') or ''), 'balance': [], 'quiz': [], 'imagine': [], 'dates': [], 'courses': [], 'books': [], 'wed': [], 'log': []}
     seen = set()
     for i, b in enumerate(f.get('balance') or []):
         w = f'balance[{i}]'
@@ -860,14 +860,26 @@ def fresh_check(f, today):
             errs.append(w + ': 가격(원)은 넣지 않음'); continue
         keep = ('id', 't', 'a', 'pub', 'yr', 'cat', 'tags', 'one', 'why', 'src', 'pages', 'couple', 'isbn')
         seen.add(b['id']); out['books'].append({k: b[k] for k in keep if k in b} | {'couple': bool(b.get('couple')), 'wk': str(b.get('wk') or out['week'])})
+    out['wed'] = []   # v32.3 결혼 준비 소식(지원 제도·시세). 이 목록만 금액(원) 허용
+    for i, x in enumerate(f.get('wed') or []):
+        w = f'wed[{i}]'
+        if not isinstance(x, dict) or not isinstance(x.get('t'), str) or not 2 <= len(x['t']) <= 40 or not isinstance(x.get('d'), str) or not 5 <= len(x['d']) <= 140:
+            errs.append(w + ': t(40자)·d(5~140자) 확인'); continue
+        u = str(x.get('url') or '')
+        if u and not re.match(r'^https://[^\s"\'<>]+$', u):
+            errs.append(w + ': url은 https://'); continue
+        ver = str(x.get('ver') or '')
+        if ver not in ('✓', '⚠', '단일'):
+            errs.append(w + ': ver는 ✓/⚠/단일 중 하나'); continue
+        out['wed'].append({'t': x['t'], 'd': x['d'], 'url': u, 'ver': ver, 'asof': str(x.get('asof') or '')[:10], 'wk': str(x.get('wk') or out['week'])})
     for k, lim in FRESH_MAX.items():
         if len(out[k]) > lim:
             out[k] = out[k][-lim:]        # 오래된 것부터 정리
     for l in (f.get('log') or [])[-30:]:
         if isinstance(l, str) and len(l) <= 120:
             out['log'].append(l)
-    if re.search(r'\d[\d,]*\s*원', json.dumps(out, ensure_ascii=False)):
-        errs.append('가격(원)은 넣지 않음')
+    if re.search(r'\d[\d,]*\s*원', json.dumps({k: v for k, v in out.items() if k != 'wed'}, ensure_ascii=False)):
+        errs.append('가격(원)은 넣지 않음 (결혼 소식 wed만 금액 허용)')
     return out, errs
 
 
@@ -875,10 +887,10 @@ def cmd_freshopen(a):
     s = load_settings(a.settings)
     aes, _ = keys_for(s, a.repo)
     p = os.path.join(a.repo, 'fresh.json.enc')
-    f = json.loads(open_bytes(aes, open(p, 'rb').read())) if os.path.exists(p) else {'v': 1, 'updated': '', 'week': '', 'balance': [], 'quiz': [], 'imagine': [], 'dates': [], 'courses': [], 'books': [], 'log': []}
+    f = json.loads(open_bytes(aes, open(p, 'rb').read())) if os.path.exists(p) else {'v': 1, 'updated': '', 'week': '', 'balance': [], 'quiz': [], 'imagine': [], 'dates': [], 'courses': [], 'books': [], 'wed': [], 'log': []}
     with open(a.out, 'w', encoding='utf-8') as fh:
         json.dump(f, fh, ensure_ascii=False, indent=0)
-    print(json.dumps({'opened': a.out, 'week': f.get('week'), 'updated': f.get('updated'), 'counts': {k: len(f.get(k) or []) for k in ('balance', 'quiz', 'imagine', 'dates', 'courses', 'books')},
+    print(json.dumps({'opened': a.out, 'week': f.get('week'), 'updated': f.get('updated'), 'counts': {k: len(f.get(k) or []) for k in ('balance', 'quiz', 'imagine', 'dates', 'courses', 'books', 'wed')},
                       'lastIds': {k: [x.get('id') for x in (f.get(k) or [])[-3:]] for k in ('balance', 'quiz', 'dates', 'courses', 'books')}, 'log': (f.get('log') or [])[-3:]}, ensure_ascii=False, indent=1))
 
 
@@ -902,7 +914,7 @@ def cmd_freshseal(a):
         fh.write(seal_bytes(aes, mac, raw))
     wk = out['week']
     print(json.dumps({'ok': True, 'week': wk, 'kb': len(raw) // 1024, 'thisWeek': {k: len([x for x in out[k] if isinstance(x, dict) and x.get('wk') == wk]) for k in ('balance', 'quiz', 'dates', 'courses', 'books')},
-                      'imagine': len(out['imagine']), 'total': {k: len(out[k]) for k in ('balance', 'quiz', 'imagine', 'dates', 'courses')}}, ensure_ascii=False, indent=1))
+                      'imagine': len(out['imagine']), 'total': {k: len(out[k]) for k in ('balance', 'quiz', 'imagine', 'dates', 'courses', 'wed')}}, ensure_ascii=False, indent=1))
 
 
 # ---------- 매주 쌓이는 자료(v18): 책 lib.json.enc · 해외여행 world.json.enc ----------
