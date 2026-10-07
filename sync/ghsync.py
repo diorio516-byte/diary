@@ -22,6 +22,11 @@
   newswants --settings s.json --repo repo --sync syncdir   두 사람이 '가고 싶어/같이 볼래' 누른 소식 목록
   freshopen --settings s.json --repo repo --out fresh.json   매주 새 소재(fresh.json.enc) 풀기, 없으면 빈 틀
   freshseal --settings s.json --repo repo --fresh fresh.json   검사 후 암호화
+  libopen  --settings s.json --repo repo --out lib.json     매주 쌓이는 책(lib.json.enc) 풀기, 없으면 빈 틀
+  libseal  --settings s.json --repo repo --in lib.json [--base content/books.json] [--sync syncdir]   검사·정리 후 암호화(ok·errors·counts)
+  plcopen/plcseal  매주 장소(v22) plc.json — --base content/places.json (먹을 곳·잘 곳 새 곳·재확인·순서표·출처 장부)
+  worldopen --settings s.json --repo repo --out world.json  매주 쌓이는 해외여행(world.json.enc) 풀기, 없으면 빈 틀
+  worldseal --settings s.json --repo repo --in world.json [--base content/trips.json] [--sync syncdir]  검사·정리 후 암호화
   packsrc  --settings s.json --repo repo --src 폴더           앱 소스(빌드 전 파일) 묶음을 암호화해 dev/src.tgz.enc로
   unpacksrc --settings s.json --repo repo --out 폴더          dev/src.tgz.enc 풀기
 """
@@ -278,10 +283,32 @@ def cmd_cfg(a):
     key = osync.get('syncKey') or base64.b64encode(os.urandom(32)).decode()
     cfg = {'v': 1, 'sync': {'owner': s['user'], 'repo': s['repo'], 'branch': 'sync', 'token': s['token'], 'syncKey': key,
                             'tokenExp': s.get('token_exp') or osync.get('tokenExp') or ''}}
+    if old.get('ntfy'):  # 알림 주제(ntfy)는 그대로 둔다
+        cfg['ntfy'] = old['ntfy']
     raw = json.dumps(cfg, ensure_ascii=False, sort_keys=True).encode('utf-8')
     changed = write_if_changed(cfg_path(a.repo), seal_bytes(aes, mac, raw))
     print(json.dumps({'cfg': ('new' if not old else 'updated') if changed else 'same', 'tokenExp': cfg['sync']['tokenExp'],
                       'keyKept': bool(osync.get('syncKey'))}, ensure_ascii=False))
+
+
+def cmd_notify(a):
+    """두 폰(또는 한쪽)에 짧은 알림을 보낸다. 주제 이름은 cfg.json의 ntfy에서 읽는다. 내용은 짧게, 기록 본문은 넣지 않는다."""
+    s = load_settings(a.settings)
+    aes, _ = keys_for(s, a.repo)
+    n = (read_cfg(a.repo, aes) or {}).get('ntfy') or {}
+    if not (n.get('j') and n.get('h')):
+        print(json.dumps({'sent': 0, 'note': '알림 주제가 아직 없음'}, ensure_ascii=False)); return
+    import urllib.request
+    who = ['j', 'h'] if a.to == 'both' else [a.to]
+    sent = 0
+    for w in who:
+        body = json.dumps({'topic': n[w], 'title': a.title or '우리 다이어리', 'message': a.msg[:300], 'priority': 3, 'tags': ['sparkles']}, ensure_ascii=False).encode('utf-8')
+        try:
+            req = urllib.request.Request((n.get('server') or 'https://ntfy.sh').rstrip('/'), data=body, headers={'Content-Type': 'application/json'})
+            urllib.request.urlopen(req, timeout=20).read(); sent += 1
+        except Exception as e:
+            print(json.dumps({'warn': f'{w} 알림 실패: {type(e).__name__}'}, ensure_ascii=False))
+    print(json.dumps({'sent': sent}, ensure_ascii=False))
 
 
 def remote_url(s):
@@ -433,12 +460,13 @@ def cmd_syncclean(a):
 def cmd_packsrc(a):
     s = load_settings(a.settings)
     aes, mac = keys_for(s, a.repo)
-    import tarfile, io
+    import tarfile, io, gzip
     buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode='w:gz') as t:
+    # 같은 소스면 같은 묶음이 나오게(순서 고정, gzip 시각 0) — 바뀐 게 없으면 커밋도 없음
+    with gzip.GzipFile(fileobj=buf, mode='wb', mtime=0) as gz, tarfile.open(fileobj=gz, mode='w') as t:
         for root, dirs, files in os.walk(a.src):
-            dirs[:] = [d for d in dirs if d not in ('node_modules', 'shots', '__pycache__', 'www', 'nightly', 'prodtest')]
-            for f in files:
+            dirs[:] = sorted(d for d in dirs if d not in ('node_modules', 'shots', '__pycache__', 'www', 'nightly', 'prodtest'))
+            for f in sorted(files):
                 p = os.path.join(root, f)
                 if os.path.getsize(p) > 5 * 1024 * 1024 or f.endswith(('.jpg', '.png')):
                     continue
@@ -738,7 +766,9 @@ def cmd_newswants(a):
 
 
 # ---------- 매주 새 소재(fresh.json.enc) ----------
-FRESH_MAX = {'balance': 400, 'quiz': 200, 'imagine': 200, 'dates': 120, 'wed': 30}
+FRESH_MAX = {'balance': 1500, 'quiz': 600, 'imagine': 600, 'dates': 1000, 'courses': 200, 'books': 30}   # v22: 쌓이도록 크게(재준 요청 「데이터량 늘리기」)
+FRESH_MAX_KB = 2 * 1024
+COURSE_K = ('see', 'do', 'eat', 'cafe', 'stay', 'move')
 DATE_ENUM = {'io': ('both', 'in', 'out'), 'time': ('1h', 'day', 'half', 'trip'), 'wx': ('any', 'clear', 'cold', 'hot', 'rain'), 'when': ('any', 'day', 'night', 'weekend'),
              'tag': ('계절', '공연', '만들기', '맛집', '바다', '산책', '액티비티', '야경', '여행', '장거리', '전시', '집데이트', '축제', '카페'), 'reg': ('', '청주', '광주', '충청', '호남', '중간')}
 
@@ -747,7 +777,7 @@ def fresh_check(f, today):
     errs = []
     if not isinstance(f, dict):
         return None, ['맨 위 형식이 {"v":1,...}가 아님']
-    out = {'v': 1, 'updated': '', 'week': str(f.get('week') or ''), 'balance': [], 'quiz': [], 'imagine': [], 'dates': [], 'wed': [], 'log': []}
+    out = {'v': 1, 'updated': '', 'week': str(f.get('week') or ''), 'balance': [], 'quiz': [], 'imagine': [], 'dates': [], 'courses': [], 'books': [], 'log': []}
     seen = set()
     for i, b in enumerate(f.get('balance') or []):
         w = f'balance[{i}]'
@@ -786,26 +816,58 @@ def fresh_check(f, today):
         if re.search(r'\d[\d,]*\s*원', json.dumps(d, ensure_ascii=False)):
             errs.append(w + ': 가격(원)은 넣지 않음'); continue
         seen.add(d['id']); out['dates'].append({k: d.get(k, '') for k in ('id', 't', 'd', 'io', 'time', 'season', 'wx', 'when', 'tag', 'reg', 'place', 'area')} | {'wk': str(d.get('wk') or out['week'])})
-    out['wed'] = []
-    for i, x in enumerate(f.get('wed') or []):
-        w = f'wed[{i}]'
-        if not isinstance(x, dict) or not isinstance(x.get('t'), str) or not 2 <= len(x['t']) <= 40 or not isinstance(x.get('d'), str) or not 5 <= len(x['d']) <= 140:
-            errs.append(w + ': t(40자)·d(5~140자) 확인'); continue
-        u = str(x.get('url') or '')
-        if u and not re.match(r'^https://[^\s"\'<>]+$', u):
-            errs.append(w + ': url은 https://'); continue
-        ver = str(x.get('ver') or '')
-        if ver not in ('✓', '⚠', '단일'):
-            errs.append(w + ': ver는 ✓/⚠/단일 중 하나'); continue
-        out['wed'].append({'t': x['t'], 'd': x['d'], 'url': u, 'ver': ver, 'asof': str(x.get('asof') or '')[:10], 'wk': str(x.get('wk') or out['week'])})
+    for i, c in enumerate(f.get('courses') or []):
+        w = f'courses[{i}]'
+        if not isinstance(c, dict) or not re.match(r'^crf-[a-z0-9-]{2,30}$', str(c.get('id', ''))):
+            errs.append(w + ': id는 crf-로 시작'); continue
+        if c['id'] in seen:
+            errs.append(w + ': id 겹침'); continue
+        if not isinstance(c.get('t'), str) or not 2 <= len(c['t']) <= 14 or c.get('reg') not in ('충청', '호남', '중간', '전국') or c.get('days') not in (1, 2):
+            errs.append(w + ': t(14자)·reg(충청|호남|중간|전국)·days(1|2) 확인'); continue
+        st = c.get('steps')
+        if not isinstance(st, list) or not 3 <= len(st) <= 12:
+            errs.append(w + ': steps 3~12개'); continue
+        bad = [j for j, x in enumerate(st) if not isinstance(x, dict) or x.get('k') not in COURSE_K or not isinstance(x.get('n'), str) or not 1 <= len(x['n']) <= 40
+               or len(str(x.get('what') or '')) > 60 or (x.get('t100') and not re.match(r'^t\d{3}$', str(x['t100'])))]
+        if bad:
+            errs.append(w + f': steps{bad} k·n(40자)·what(60자)·t100 확인'); continue
+        if re.search(r'\d[\d,]*\s*원', json.dumps(c, ensure_ascii=False)):
+            errs.append(w + ': 가격(원)은 넣지 않음'); continue
+        keep = ('id', 't', 'reg', 'area', 'days', 'theme', 'season', 'wx', 'io', 'from', 'one', 'steps', 'tips')
+        seen.add(c['id']); out['courses'].append({k: c[k] for k in keep if k in c} | {'wk': str(c.get('wk') or out['week'])})
+    for i, b in enumerate(f.get('books') or []):   # 책장(v14): 새 추천 책 bkf-…
+        w = f'books[{i}]'
+        if not isinstance(b, dict) or not re.match(r'^bkf-[a-z0-9-]{2,30}$', str(b.get('id', ''))):
+            errs.append(w + ': id는 bkf-로 시작(영문 소문자·숫자·-)'); continue
+        if b['id'] in seen:
+            errs.append(w + ': id 겹침'); continue
+        if not all(isinstance(b.get(k), str) and 1 <= len(b[k].strip()) <= n for k, n in (('t', 60), ('a', 40), ('cat', 12))):
+            errs.append(w + ': t(60자)·a(40자)·cat(12자) 확인'); continue
+        if len(str(b.get('one') or '')) > 80 or len(str(b.get('why') or '')) > 160 or len(str(b.get('pub') or '')) > 30:
+            errs.append(w + ': one(80자)·why(160자)·pub(30자) 확인'); continue
+        pg, yr = b.get('pages', 0), b.get('yr', 0)
+        if not isinstance(pg, int) or not 0 <= pg <= 3000 or not isinstance(yr, int) or not (yr == 0 or 1000 <= yr <= 2100):
+            errs.append(w + ': pages(0~3000 정수)·yr(연도 정수) 확인'); continue
+        tags = b.get('tags') or []
+        if not isinstance(tags, list) or len(tags) > 6 or not all(isinstance(t, str) and 1 <= len(t) <= 12 for t in tags):
+            errs.append(w + ': tags 6개까지(각 12자)'); continue
+        src = b.get('src') or []
+        if not isinstance(src, list) or len(src) > 5 or not all(isinstance(x, (int, str)) or (isinstance(x, dict) and isinstance(x.get('n'), str)) for x in src):
+            errs.append(w + ': src 5개까지(번호·이름·{n,u})'); continue
+        if b.get('isbn') is not None and not re.match(r'^(\d{10}|\d{13})$', str(b['isbn'])):
+            errs.append(w + ': isbn 은 숫자 10·13자리'); continue
+        if re.search(r'\d[\d,]*\s*원', json.dumps(b, ensure_ascii=False)):
+            errs.append(w + ': 가격(원)은 넣지 않음'); continue
+        keep = ('id', 't', 'a', 'pub', 'yr', 'cat', 'tags', 'one', 'why', 'src', 'pages', 'couple', 'isbn')
+        seen.add(b['id']); out['books'].append({k: b[k] for k in keep if k in b} | {'couple': bool(b.get('couple')), 'wk': str(b.get('wk') or out['week'])})
     for k, lim in FRESH_MAX.items():
         if len(out[k]) > lim:
             out[k] = out[k][-lim:]        # 오래된 것부터 정리
     for l in (f.get('log') or [])[-30:]:
         if isinstance(l, str) and len(l) <= 120:
             out['log'].append(l)
-    if re.search(r'\d[\d,]*\s*원', json.dumps({k: v for k, v in out.items() if k != 'wed'}, ensure_ascii=False)):
-        errs.append('가격(원)은 넣지 않음 (결혼 소식 wed만 금액 허용)')
+    if re.search(r'\d[\d,]*\s*원', json.dumps(out, ensure_ascii=False)):
+        errs.append('가격(원)은 넣지 않음')
     return out, errs
 
 
@@ -813,11 +875,11 @@ def cmd_freshopen(a):
     s = load_settings(a.settings)
     aes, _ = keys_for(s, a.repo)
     p = os.path.join(a.repo, 'fresh.json.enc')
-    f = json.loads(open_bytes(aes, open(p, 'rb').read())) if os.path.exists(p) else {'v': 1, 'updated': '', 'week': '', 'balance': [], 'quiz': [], 'imagine': [], 'dates': [], 'wed': [], 'log': []}
+    f = json.loads(open_bytes(aes, open(p, 'rb').read())) if os.path.exists(p) else {'v': 1, 'updated': '', 'week': '', 'balance': [], 'quiz': [], 'imagine': [], 'dates': [], 'courses': [], 'books': [], 'log': []}
     with open(a.out, 'w', encoding='utf-8') as fh:
         json.dump(f, fh, ensure_ascii=False, indent=0)
-    print(json.dumps({'opened': a.out, 'week': f.get('week'), 'updated': f.get('updated'), 'counts': {k: len(f.get(k) or []) for k in ('balance', 'quiz', 'imagine', 'dates', 'wed')},
-                      'lastIds': {k: [x.get('id') for x in (f.get(k) or [])[-3:]] for k in ('balance', 'quiz', 'dates')}, 'log': (f.get('log') or [])[-3:]}, ensure_ascii=False, indent=1))
+    print(json.dumps({'opened': a.out, 'week': f.get('week'), 'updated': f.get('updated'), 'counts': {k: len(f.get(k) or []) for k in ('balance', 'quiz', 'imagine', 'dates', 'courses', 'books')},
+                      'lastIds': {k: [x.get('id') for x in (f.get(k) or [])[-3:]] for k in ('balance', 'quiz', 'dates', 'courses', 'books')}, 'log': (f.get('log') or [])[-3:]}, ensure_ascii=False, indent=1))
 
 
 def cmd_freshseal(a):
@@ -831,13 +893,620 @@ def cmd_freshseal(a):
     import datetime as _dt
     out['updated'] = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).replace(microsecond=0).isoformat()
     raw = json.dumps(out, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
-    if len(raw) > 300 * 1024:
-        print(json.dumps({'ok': False, 'errors': [f'너무 큼 {len(raw)//1024}KB (300KB 이하)']}, ensure_ascii=False)); sys.exit(1)
+    while len(raw) > FRESH_MAX_KB * 1024 and len(out['courses']) > 24:   # 넘치면 오래된 코스부터(코스가 가장 큼)
+        out['courses'] = out['courses'][1:]
+        raw = json.dumps(out, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    if len(raw) > FRESH_MAX_KB * 1024:
+        print(json.dumps({'ok': False, 'errors': [f'너무 큼 {len(raw)//1024}KB ({FRESH_MAX_KB}KB 이하)']}, ensure_ascii=False)); sys.exit(1)
     with open(os.path.join(a.repo, 'fresh.json.enc'), 'wb') as fh:
         fh.write(seal_bytes(aes, mac, raw))
     wk = out['week']
-    print(json.dumps({'ok': True, 'week': wk, 'kb': len(raw) // 1024, 'thisWeek': {k: len([x for x in out[k] if isinstance(x, dict) and x.get('wk') == wk]) for k in ('balance', 'quiz', 'dates')},
-                      'imagine': len(out['imagine']), 'total': {k: len(out[k]) for k in ('balance', 'quiz', 'imagine', 'dates', 'wed')}}, ensure_ascii=False, indent=1))
+    print(json.dumps({'ok': True, 'week': wk, 'kb': len(raw) // 1024, 'thisWeek': {k: len([x for x in out[k] if isinstance(x, dict) and x.get('wk') == wk]) for k in ('balance', 'quiz', 'dates', 'courses', 'books')},
+                      'imagine': len(out['imagine']), 'total': {k: len(out[k]) for k in ('balance', 'quiz', 'imagine', 'dates', 'courses')}}, ensure_ascii=False, indent=1))
+
+
+# ---------- 매주 쌓이는 자료(v18): 책 lib.json.enc · 해외여행 world.json.enc ----------
+# 앱 빌드(app.html)에 박힌 책 150권·여행지 61곳에 매주 새로 조사한 것을 더해 가는 누적 파일.
+# 앱은 책장·해외여행을 열 때(또는 시작 뒤 한가할 때) 받아 빌드 자료와 합친다(같은 id 면 누적 쪽이 이김).
+# 새 id 는 접두로 빌드 자료와 구분: 책 bkw-<주>-NNN (예 bkw-2026w41-001), 여행지 trw-<주>-NNN.
+LIB_MAX_KB = 3 * 1024          # lib.json 평문 3MB (책 1권 ≈ 0.5KB → 약 40주 치)
+WORLD_MAX_KB = 8 * 1024        # world.json 평문 8MB (여행지 1곳 ≈ 10KB → 약 13주 치, 오래된 주는 기본 일정만 남겨 더 버팀)
+LIB_WEEK_CAP = 200             # 한 주에 더할 수 있는 책
+WORLD_WEEK_CAP = 80            # 한 주에 더할 수 있는 여행지
+WORLD_SLIM_WEEKS = 8           # 크기가 넘치면 이 주 수보다 오래된 여행지는 기본 일정만 남김
+WK_RE = re.compile(r'^(\d{4})-W(\d{2})$')
+DOWS = ('일', '월', '화', '수', '목', '금', '토')
+TR_REGIONS = ('일본', '동남아', '중화권', '아시아', '유럽', '북유럽', '북미', '대양주', '중동', '아프리카', '중남미')
+TR_STEP_K = ('see', 'do', 'eat', 'cafe', 'stay', 'move', 'fly')
+TR_FROM_K = ('청주', '광주/무안', '인천', '김포')
+# robots.txt 로 자동 수집을 막은 곳(v9·v15 조사 원칙) — 출처·링크로 들어 있으면 거부
+BLOCKED_SRC = re.compile(r'(?i)(?<![a-z0-9-])(?:[a-z0-9-]+\.)*(?:kakao\.com|kko\.to|kakaocdn\.net|brunch\.co\.kr|naver\.com|naver\.me|catchtable\.(?:co\.kr|net)|bluer\.co\.kr|'
+                         r'klook\.com|kkday\.com|airport\.co\.kr|skyscanner\.[a-z.]+)(?![a-z0-9-])'
+                         r'|(?<![a-z0-9-])(?:maps\.google\.[a-z.]+|(?:www\.)?google\.[a-z.]+/maps|goo\.gl/maps|maps\.app\.goo\.gl)')
+SECRET_RE = re.compile(r'gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|\bsk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}'
+                       r'|xox[abprs]-[A-Za-z0-9-]{10,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY'
+                       r'|(?i:(?:password|passwd|비밀번호|토큰|token|secret|api[_-]?key)\s*[:=：]\s*\S{4,})')
+PRICE_RE = re.compile(r'\d[\d,]*\s*원|₩\s*\d')
+
+
+def _wk_ok(wk):
+    m = WK_RE.match(str(wk or ''))
+    return bool(m) and 1 <= int(m.group(2)) <= 53
+
+
+def _wk_slug(wk):          # '2026-W41' → '2026w41'
+    return str(wk).lower().replace('-', '')
+
+
+def _strs(o):
+    if isinstance(o, str):
+        yield o
+    elif isinstance(o, dict):
+        for k, v in o.items():
+            yield str(k)
+            yield from _strs(v)
+    elif isinstance(o, list):
+        for v in o:
+            yield from _strs(v)
+
+
+def _secret_vals(s, repo, aes):
+    """설정·cfg 안의 비밀값(토큰·공유 키·알림 주제 등). 값은 비교에만 쓰고 어디에도 출력하지 않는다."""
+    sub, word = set(), set()
+    if s.get('token') and len(s['token']) >= 8:
+        sub.add(s['token'])
+    for k in ('pw', 'old_pw'):
+        if s.get(k) and len(s[k]) >= 4:
+            word.add(s[k])
+    cfg = read_cfg(repo, aes) if aes else None
+    for v in _strs(cfg or {}):
+        if len(v) >= 12 and not v.startswith('http') and ' ' not in v:
+            sub.add(v)
+    return sub, word
+
+
+def _leak(obj, sub, word):
+    """비밀값처럼 보이는 문자열이 있으면 어디(첫 칸 이름)인지만 돌려준다. 값은 돌려주지 않는다."""
+    for v in _strs(obj):
+        if SECRET_RE.search(v):
+            return True
+        if any(x in v for x in sub):
+            return True
+        if any(re.search(r'(?<![0-9A-Za-z])' + re.escape(w) + r'(?![0-9A-Za-z])', v) for w in word):
+            return True
+    return False
+
+
+def _blocked(obj):
+    for v in _strs(obj):
+        m = BLOCKED_SRC.search(v)
+        if m:
+            return m.group(0)
+    return ''
+
+
+def _txt(v, lo, hi):
+    return isinstance(v, str) and lo <= len(v.strip()) <= hi
+
+
+def _src_list(src, w, errs, need=0, lim=8):
+    """출처: 이름(글) 또는 {n,u}. 번호는 파일마다 뜻이 달라 받지 않는다."""
+    if not isinstance(src, list) or len(src) > lim:
+        errs.append(f'{w}: src 는 {lim}개까지 목록'); return None
+    out = []
+    for x in src:
+        if isinstance(x, str) and 1 <= len(x.strip()) <= 80:
+            out.append(x.strip())
+        elif isinstance(x, dict) and _txt(x.get('n'), 1, 80) and (x.get('u') in (None, '') or (isinstance(x.get('u'), str) and re.match(r'^https?://\S{3,300}$', x['u']))):
+            out.append({'n': x['n'].strip()} | ({'u': x['u']} if x.get('u') else {}))
+        else:
+            errs.append(f'{w}: src 는 이름(80자) 또는 {{"n","u":"https://…"}}'); return None
+    if len(out) < need:
+        errs.append(f'{w}: 출처(src)가 {need}곳 이상 있어야 함'); return None
+    return out
+
+
+def _norm_key(*vals):
+    return '|'.join(re.sub(r'[\s·.,:;\'"!?()〈〉《》「」\-]', '', str(v or '')).lower() for v in vals)
+
+
+def _weeks_check(f, kind, errs):
+    weeks, seen = [], set()
+    for i, w in enumerate(f.get('weeks') or []):
+        at = f'weeks[{i}]'
+        if not isinstance(w, dict) or not _wk_ok(w.get('wk')):
+            errs.append(at + ': wk 는 "2026-W41" 꼴'); continue
+        if w['wk'] in seen:
+            errs.append(at + ': 같은 주가 두 번'); continue
+        src = _src_list(w.get('src') or [], at, errs, 0, 300)
+        if src is None:
+            continue
+        if len(str(w.get('note') or '')) > 200:
+            errs.append(at + ': note 200자까지'); continue
+        seen.add(w['wk'])
+        weeks.append({'wk': w['wk'], 'n': 0, 'src': src} | ({'note': w['note']} if w.get('note') else {}) | ({'np': 0} if kind == 'world' else {}))
+    weeks.sort(key=lambda w: w['wk'])
+    return weeks
+
+
+def _load_base(path, key):
+    """--base: 앱 소스의 content/books.json·trips.json(unpacksrc 로 푼 것). id·이름 겹침 검사용"""
+    if not path:
+        return None
+    try:
+        b = json.load(open(path, encoding='utf-8'))
+        if key == 'places' and 'places' not in b:
+            return (b.get('food') or []) + (b.get('stay') or [])   # content/places.json
+        return b.get(key) or []
+    except Exception as e:
+        die(f'--base 읽기 실패: {type(e).__name__}')
+
+
+def _keep_refs(s, repo, syncdir, pre):
+    """--sync: 두 사람 기록(♥·읽는 중·우리 여행 등)이 가리키는 누적 id 는 정리하지 않는다"""
+    if not syncdir:
+        return set()
+    try:
+        key = sync_key(s, repo)
+        recs, _ = sync_records(key, syncdir)
+    except SystemExit:
+        return set()
+    return {str(r.get('ref')) for r in recs.values() if isinstance(r, dict) and str(r.get('ref') or '').startswith(pre)}
+
+
+def _book_check(b, w, errs):
+    if not all(_txt(b.get(k), 1, n) for k, n in (('t', 60), ('a', 40), ('cat', 12), ('one', 80), ('why', 160))):
+        errs.append(w + ': t(60자)·a(40자)·cat(12자)·one(80자)·why(160자) 모두 필요'); return None
+    if len(str(b.get('pub') or '')) > 30:
+        errs.append(w + ': pub 30자까지'); return None
+    pg, yr = b.get('pages', 0), b.get('yr', 0)
+    if not isinstance(pg, int) or isinstance(pg, bool) or not 0 <= pg <= 3000 or not isinstance(yr, int) or isinstance(yr, bool) or not (yr == 0 or 1000 <= yr <= 2100):
+        errs.append(w + ': pages(0~3000 정수)·yr(연도 정수) 확인'); return None
+    tags = b.get('tags') or []
+    if not isinstance(tags, list) or len(tags) > 6 or not all(_txt(t, 1, 12) for t in tags):
+        errs.append(w + ': tags 6개까지(각 12자)'); return None
+    src = _src_list(b.get('src') or [], w, errs, 1, 5)
+    if src is None:
+        return None
+    if b.get('isbn') not in (None, '') and not re.match(r'^(\d{10}|\d{13})$', str(b['isbn'])):
+        errs.append(w + ': isbn 은 숫자 10·13자리'); return None
+    if any(k in b for k in ('price', 'pr', '가격', 'cost')) or PRICE_RE.search(json.dumps(b, ensure_ascii=False)):
+        errs.append(w + ': 책에는 가격을 넣지 않음'); return None
+    keep = ('id', 'wk', 't', 'a', 'pub', 'yr', 'cat', 'tags', 'one', 'why', 'pages', 'isbn')
+    return {k: b[k] for k in keep if k in b and b[k] not in (None, '')} | {'src': src, 'couple': bool(b.get('couple'))}
+
+
+def lib_check(f, base=None, keep=frozenset(), max_kb=LIB_MAX_KB):
+    """lib.json 검사·정리. (정리된 것, 오류 목록, 정보) — 오류가 하나라도 있으면 올리지 않는다."""
+    errs, info = [], {'pruned': 0, 'prunedWeeks': []}
+    if not isinstance(f, dict) or f.get('v') != 1:
+        return None, ['맨 위 형식이 {"v":1,"weeks":[],"books":[]} 가 아님'], info
+    for k in f:
+        if k not in ('v', 'updated', 'dow', 'weeks', 'books'):
+            errs.append(f'모르는 칸 "{k}"')
+    if f.get('dow') not in (None, '') and f.get('dow') not in DOWS:
+        errs.append('dow 는 일·월·화·수·목·금·토 중 하나')
+    weeks = _weeks_check(f, 'lib', errs)
+    wkset = {w['wk'] for w in weeks}
+    books, ids, names = [], set(), {}
+    base_ids = {str(x.get('id')) for x in (base or [])}
+    base_names = {_norm_key(x.get('t'), x.get('a')) for x in (base or [])}
+    for i, b in enumerate(f.get('books') or []):
+        w = f'books[{i}]'
+        if not isinstance(b, dict):
+            errs.append(w + ': 모양이 {…} 가 아님'); continue
+        m = re.match(r'^bkw-(\d{4}w\d{2})-(\d{3})$', str(b.get('id', '')))
+        if not m:
+            errs.append(w + ': id 는 bkw-<주>-NNN (예 bkw-2026w41-001)'); continue
+        wk = str(b.get('wk') or '')
+        if not _wk_ok(wk) or _wk_slug(wk) != m.group(1):
+            errs.append(w + f': wk 와 id 의 주가 다름({b["id"]})'); continue
+        if wk not in wkset:
+            errs.append(w + f': weeks 에 {wk} 가 없음'); continue
+        if b['id'] in ids or b['id'] in base_ids:
+            errs.append(w + f': id 겹침 {b["id"]}'); continue
+        y = _book_check(b, w, errs)
+        if not y:
+            continue
+        nk = _norm_key(y['t'], y['a'])
+        if nk in names:
+            errs.append(w + f': 같은 책(제목·저자)이 이미 있음 — {names[nk]}'); continue
+        if nk in base_names:
+            errs.append(w + ': 앱에 이미 있는 책(제목·저자)'); continue
+        ids.add(y['id']); names[nk] = y['id']
+        books.append(y)
+    for wk in wkset:
+        n = sum(1 for b in books if b['wk'] == wk)
+        if n > LIB_WEEK_CAP:
+            errs.append(f'{wk}: 한 주 책 {n}권 — {LIB_WEEK_CAP}권까지')
+    out = {'v': 1, 'updated': str(f.get('updated') or ''), 'dow': f.get('dow') or '', 'weeks': weeks, 'books': books}
+    _prune(out, 'books', keep, max_kb, info, slim=None)
+    for w in out['weeks']:
+        w['n'] = sum(1 for b in out['books'] if b['wk'] == w['wk'])
+    return out, errs, info
+
+
+def _pair(v, lo=0, hi=100_000_000):
+    return isinstance(v, list) and len(v) == 2 and all(isinstance(x, int) and not isinstance(x, bool) and lo <= x <= hi for x in v) and v[0] <= v[1]
+
+
+def _cost_check(c, w, errs, need=True):
+    if not isinstance(c, dict):
+        errs.append(w + ': cost 는 {…}'); return None
+    req = ('air', 'stay', 'food', 'act', 'total2') if need else ()
+    for k in req:
+        if k not in c:
+            errs.append(w + f': cost.{k} 필요([최소, 최대] 원, 1인 — total2 는 둘이)'); return None
+    out = {}
+    for k in ('air', 'stay', 'food', 'local', 'act', 'total2'):
+        if k in c:
+            if not _pair(c[k]):
+                errs.append(w + f': cost.{k} 는 [최소, 최대] 정수(원)'); return None
+            out[k] = c[k]
+    if not out:
+        errs.append(w + ': cost 에 바꿀 값이 없음'); return None
+    if c.get('note') not in (None, '') and not _txt(c['note'], 1, 600):
+        errs.append(w + ': cost.note 600자까지'); return None
+    if c.get('asof') not in (None, '') and not re.match(r'^\d{4}-\d{2}(-\d{2})?$', str(c['asof'])):
+        errs.append(w + ': cost.asof 는 2026-10 또는 2026-10-08'); return None
+    return out | {k: c[k] for k in ('note', 'asof') if c.get(k)}
+
+
+def _strlist(v, n, ln):
+    return isinstance(v, list) and len(v) <= n and all(_txt(x, 1, ln) for x in v)
+
+
+def _trip_check(t, w, errs):
+    for k, n in (('country', 20), ('city', 30), ('flag', 8), ('one', 80)):
+        if not _txt(t.get(k), 1, n):
+            errs.append(w + f': {k}({n}자) 필요'); return None
+    if t.get('region') not in TR_REGIONS:
+        errs.append(w + ': region 은 ' + '·'.join(TR_REGIONS) + ' 중 하나'); return None
+    if t.get('lv') not in (0, 1, 2) or isinstance(t.get('lv'), bool):
+        errs.append(w + ': lv(이 도시의 외교부 여행경보 단계 0~2) 필요 — 3단계(출국권고) 이상은 넣지 않음'); return None
+    if not _strlist(t.get('tags') or [], 8, 12):
+        errs.append(w + ': tags 8개까지(각 12자)'); return None
+    for k in ('best', 'avoid'):
+        v = t.get(k) or []
+        if not isinstance(v, list) or len(v) > 12 or not all((isinstance(x, int) and not isinstance(x, bool) and 1 <= x <= 12) or _txt(x, 1, 40) for x in v):
+            errs.append(w + f': {k} 는 달(1~12) 또는 40자 글 목록'); return None
+    if not t.get('best'):
+        errs.append(w + ': best(가기 좋은 달) 필요'); return None
+    fly = t.get('fly')
+    if not isinstance(fly, dict) or not isinstance(fly.get('from'), dict) or not fly['from'] or any(k not in TR_FROM_K for k in fly['from']) \
+            or not all(_txt(v, 1, 160) or (isinstance(v, dict) and len(json.dumps(v, ensure_ascii=False)) <= 300) for v in fly['from'].values()) \
+            or not (_txt(fly.get('hours'), 1, 60) or isinstance(fly.get('hours'), (int, float))) or len(str(fly.get('airport') or '')) > 100:
+        errs.append(w + ': fly {from{청주·광주/무안·인천·김포: 160자}, hours(60자), airport(100자)} 확인'); return None
+    cost = _cost_check(t.get('cost'), w, errs, True)
+    if not cost:
+        return None
+    prep = t.get('prep')
+    if not isinstance(prep, dict) or not _txt(prep.get('visa'), 1, 400) or not _txt(prep.get('safety'), 1, 300):
+        errs.append(w + ': prep.visa(400자)·prep.safety(300자) 필요'); return None
+    for k, v in prep.items():
+        if k == 'apps':
+            if not _strlist(v, 8, 40):
+                errs.append(w + ': prep.apps 8개까지(40자)'); return None
+        elif k not in ('visa', 'plug', 'tip', 'sim', 'safety', 'health') or not _txt(v, 1, 400):
+            errs.append(w + f': prep.{k} 확인(visa·plug·tip·sim·safety·health 400자, apps)'); return None
+    plans = t.get('plans')
+    if not isinstance(plans, list) or not 1 <= len(plans) <= 4:
+        errs.append(w + ': plans 1~4개'); return None
+    pids = set()
+    for j, p in enumerate(plans):
+        pw = f'{w}.plans[{j}]'
+        if not isinstance(p, dict) or not _txt(p.get('id'), 3, 40) or p['id'] in pids or not _txt(p.get('t'), 1, 40):
+            errs.append(pw + ': id(40자, 겹치지 않게)·t(40자)'); return None
+        if not isinstance(p.get('nights'), int) or isinstance(p.get('nights'), bool) or not 0 <= p['nights'] <= 30 or not isinstance(p.get('basic', False), bool):
+            errs.append(pw + ': nights(0~30 정수)·basic(true/false)'); return None
+        days = p.get('days')
+        if not isinstance(days, list) or not 1 <= len(days) <= 16:
+            errs.append(pw + ': days 1~16일'); return None
+        for d_, dy in enumerate(days):
+            st = dy.get('steps') if isinstance(dy, dict) else None
+            if not isinstance(st, list) or not 1 <= len(st) <= 14 or not isinstance(dy.get('day'), int):
+                errs.append(pw + f'.days[{d_}]: day(정수)·steps 1~14개'); return None
+            for s_, x in enumerate(st):
+                if not isinstance(x, dict) or x.get('k') not in TR_STEP_K or not _txt(x.get('n'), 1, 40) \
+                        or any(len(str(x.get(k) or '')) > n for k, n in (('tm', 11), ('what', 90), ('area', 30), ('cost', 60), ('book', 30), ('tip', 80))):
+                    errs.append(pw + f'.days[{d_}].steps[{s_}]: k(see·do·eat·cafe·stay·move·fly)·n(40자)·what(90자)·tm·area·cost·book·tip 길이'); return None
+        for k in ('rain', 'couple'):
+            if k in p and not _strlist(p[k], 6, 80):
+                errs.append(pw + f': {k} 6개까지(80자)'); return None
+        pids.add(p['id'])
+    if sum(1 for p in plans if p.get('basic')) != 1:
+        errs.append(w + ': basic 일정은 꼭 하나'); return None
+    if 'souvenir' in t and not _strlist(t['souvenir'], 8, 40):
+        errs.append(w + ': souvenir 8개까지(40자)'); return None
+    if t.get('cur') not in (None, '') and not re.match(r'^[A-Z]{3}$', str(t['cur'])):
+        errs.append(w + ': cur 는 통화 코드 3자(예 NOK)'); return None
+    au = t.get('aurora')
+    if au is not None:
+        if not isinstance(au, dict) or not au.get('months') or not isinstance(au['months'], list) or not all(k in ('months', 'best', 'spot', 'odds', 'tour', 'moon', 'stay', 'wear', 'photo', 'couple') for k in au) \
+                or not all(_txt(v, 1, 240) for k, v in au.items() if k != 'months'):
+            errs.append(w + ': aurora {months[], best·spot·odds·tour·moon·stay·wear·photo·couple 240자}'); return None
+    keep = ('id', 'wk', 'country', 'city', 'flag', 'region', 'lv', 'fly', 'best', 'avoid', 'one', 'tags', 'prep', 'plans', 'souvenir', 'cur', 'aurora')
+    return {k: t[k] for k in keep if k in t} | {'cost': cost}
+
+
+def _fx_check(fx, errs):
+    if fx in (None, {}):
+        return {}
+    if not isinstance(fx, dict) or not re.match(r'^\d{4}-\d{2}-\d{2}$', str(fx.get('기준일', ''))):
+        errs.append('fx: {"기준일":"2026-10-08","출처":…,"단위":"외화 1단위당 원","JPY":8.6,…}'); return {}
+    out = {}
+    for k, v in fx.items():
+        if k in ('기준일',):
+            out[k] = v
+        elif k in ('출처', '단위'):
+            if not _txt(v, 1, 200):
+                errs.append(f'fx.{k}: 200자까지'); return {}
+            out[k] = v
+        elif re.match(r'^[A-Z]{3}$', k) and isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v < 100000:
+            out[k] = v
+        else:
+            errs.append(f'fx.{k}: 통화 코드 3자 → 1단위당 원(0보다 큰 수)'); return {}
+    return out
+
+
+def world_check(f, base=None, keep=frozenset(), max_kb=WORLD_MAX_KB):
+    errs, info = [], {'pruned': 0, 'prunedWeeks': [], 'slimmed': 0}
+    if not isinstance(f, dict) or f.get('v') != 1:
+        return None, ['맨 위 형식이 {"v":1,"fx":{},"weeks":[],"trips":[],"patch":{}} 가 아님'], info
+    for k in f:
+        if k not in ('v', 'updated', 'dow', 'fx', 'weeks', 'trips', 'patch'):
+            errs.append(f'모르는 칸 "{k}"')
+    if f.get('dow') not in (None, '') and f.get('dow') not in DOWS:
+        errs.append('dow 는 일·월·화·수·목·금·토 중 하나')
+    weeks = _weeks_check(f, 'world', errs)
+    wkset = {w['wk'] for w in weeks}
+    fx = _fx_check(f.get('fx'), errs)
+    trips, ids, names = [], set(), {}
+    base_ids = {str(x.get('id')) for x in (base or [])}
+    base_names = {_norm_key(x.get('country'), x.get('city')) for x in (base or [])}
+    for i, t in enumerate(f.get('trips') or []):
+        w = f'trips[{i}]'
+        if not isinstance(t, dict):
+            errs.append(w + ': 모양이 {…} 가 아님'); continue
+        m = re.match(r'^trw-(\d{4}w\d{2})-(\d{3})$', str(t.get('id', '')))
+        if not m:
+            errs.append(w + ': id 는 trw-<주>-NNN (예 trw-2026w41-001)'); continue
+        wk = str(t.get('wk') or '')
+        if not _wk_ok(wk) or _wk_slug(wk) != m.group(1):
+            errs.append(w + f': wk 와 id 의 주가 다름({t["id"]})'); continue
+        if wk not in wkset:
+            errs.append(w + f': weeks 에 {wk} 가 없음'); continue
+        if t['id'] in ids or t['id'] in base_ids:
+            errs.append(w + f': id 겹침 {t["id"]}'); continue
+        y = _trip_check(t, w + f'({t["id"]})', errs)
+        if not y:
+            continue
+        nk = _norm_key(y['country'], y['city'])
+        if nk in names:
+            errs.append(w + f': 같은 여행지(나라·도시)가 이미 있음 — {names[nk]}'); continue
+        if nk in base_names:
+            errs.append(w + ': 앱에 이미 있는 여행지(나라·도시) — 비용 갱신은 patch 로'); continue
+        ids.add(y['id']); names[nk] = y['id']
+        trips.append(y)
+    for wk in wkset:
+        n = sum(1 for t in trips if t['wk'] == wk)
+        if n > WORLD_WEEK_CAP:
+            errs.append(f'{wk}: 한 주 여행지 {n}곳 — {WORLD_WEEK_CAP}곳까지')
+    patch = {}
+    P = f.get('patch') or {}
+    if not isinstance(P, dict):
+        errs.append('patch 는 {"여행지 id": {"cost":{…},"asof":"2026-10","wk":"2026-W41"}}')
+        P = {}
+    for pid, p in P.items():
+        w = f'patch[{pid}]'
+        if not re.match(r'^(tr-[a-z0-9-]{2,40}|trw-\d{4}w\d{2}-\d{3})$', str(pid)):
+            errs.append(w + ': 키는 여행지 id(tr-… 또는 trw-…)'); continue
+        if base is not None and pid.startswith('tr-') and pid not in base_ids:
+            errs.append(w + ': 앱에 없는 여행지 id'); continue
+        if pid.startswith('trw-') and pid not in ids:
+            errs.append(w + ': 누적 여행지(trw-)는 trips 에서 바로 고치기'); continue
+        if not isinstance(p, dict) or not isinstance(p.get('cost'), dict):
+            errs.append(w + ': {"cost":{…},"asof":…,"wk":…}'); continue
+        c = _cost_check(p['cost'], w, errs, False)
+        if not c:
+            continue
+        asof = str(p.get('asof') or c.get('asof') or '')
+        if not re.match(r'^\d{4}-\d{2}(-\d{2})?$', asof):
+            errs.append(w + ': asof(조사 시점 2026-10 또는 2026-10-08) 필요'); continue
+        wk = str(p.get('wk') or '')
+        if wk and not _wk_ok(wk):
+            errs.append(w + ': wk 는 "2026-W41" 꼴'); continue
+        patch[pid] = {'cost': c, 'asof': asof} | ({'wk': wk} if wk else {})
+    out = {'v': 1, 'updated': str(f.get('updated') or ''), 'dow': f.get('dow') or '', 'fx': fx, 'weeks': weeks, 'trips': trips, 'patch': patch}
+    _prune(out, 'trips', keep, max_kb, info, slim=WORLD_SLIM_WEEKS)
+    for w in out['weeks']:
+        w['n'] = sum(1 for t in out['trips'] if t['wk'] == w['wk'])
+        w['np'] = sum(1 for p in out['patch'].values() if p.get('wk') == w['wk'])
+    return out, errs, info
+
+
+def _size_kb(o):
+    return len(json.dumps(o, ensure_ascii=False, separators=(',', ':')).encode('utf-8')) / 1024
+
+
+
+# ---------- 매주 장소(v22): plc.json.enc — 먹을 곳·잘 곳 새 곳 + 재확인(폐업·이전) + 증거 보강 + 순서표 + 출처 장부 ----------
+PLC_MAX_KB = 3 * 1024
+PLC_WEEK_CAP = 200
+PLC_FCATS = ('한식', '고기', '국밥·탕', '면', '중식', '일식', '양식', '분식', '카페', '브런치')
+PLC_SCATS = ('호텔', '모텔', '독채')
+PLC_PATCH_K = {'vf', 'st', 'wk', 'note', 'addr', 'url', 'open', 'vsrc', 'sc', 'badge', 'plat', 'bluer', 'src'}
+DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+PLC_CLAUDE_BLOCK = re.compile(r'(?i)diningcode\.com|tripadvisor\.|yna\.co\.kr|tripinfo\.co\.kr|daangn\.com|tabling\.co\.kr|redtable\.|localmap\.co\.kr|jidoro\.com|skweb\.cjsmarttour')   # 2026-W40 robots 확인
+
+
+def plc_check(f, base=None, keep=frozenset(), max_kb=PLC_MAX_KB):
+    errs, info = [], {'pruned': 0, 'prunedWeeks': []}
+    if not isinstance(f, dict) or f.get('v') != 1:
+        return None, ['맨 위 형식이 {"v":1,"weeks":[],"places":[],"patch":{},"rank":{},"ledger":{}} 가 아님'], info
+    for k in f:
+        if k not in ('v', 'updated', 'dow', 'weeks', 'places', 'patch', 'rank', 'ledger'):
+            errs.append(f'모르는 칸 "{k}"')
+    weeks = _weeks_check(f, 'plc', errs)
+    wkset = {w['wk'] for w in weeks}
+    base_ids = {str(x.get('id')) for x in (base or [])}
+    places, ids = [], set()
+    for i, x in enumerate(f.get('places') or []):
+        w = f'places[{i}]'
+        m = re.match(r'^plw-(\d{4}w\d{2})-(\d{3})$', str((x or {}).get('id', '')))
+        if not isinstance(x, dict) or not m:
+            errs.append(w + ': id 는 plw-<주>-NNN'); continue
+        if _wk_slug(x.get('wk')) != m.group(1) or x['wk'] not in wkset:
+            errs.append(w + ': wk 가 id·weeks 와 안 맞음'); continue
+        if x['id'] in ids or x['id'] in base_ids:
+            errs.append(w + f': id 겹침 {x["id"]}'); continue
+        if x.get('city') not in ('청주', '광주') or x.get('kind') not in ('food', 'stay') or x.get('cat') not in (PLC_FCATS if x.get('kind') == 'food' else PLC_SCATS):
+            errs.append(w + ': city(청주·광주)·kind(food·stay)·cat 확인'); continue
+        if not _txt(x.get('n'), 1, 40) or not _txt(x.get('addr'), 4, 80) or not isinstance(x.get('km'), (int, float)) or not 0 <= x['km'] <= 20.5:
+            errs.append(w + ': n(40자)·addr(80자)·km(0~20) 확인'); continue
+        src = _src_list(x.get('src') or [], w, errs, 2, 6)
+        if src is None:
+            continue
+        if PRICE_RE.search(json.dumps(x, ensure_ascii=False)) or any(k in x for k in ('price', 'cost', '가격')):
+            errs.append(w + ': 장소에는 가격을 넣지 않음'); continue
+        if not isinstance(x.get('sc'), (int, float)) or not DATE_RE.match(str(x.get('vf') or '')):
+            errs.append(w + ': sc(숫자)·vf(날짜) 필요'); continue
+        ids.add(x['id'])
+        places.append(dict(x) | {'src': src})
+    for wk in wkset:
+        n = sum(1 for x in places if x['wk'] == wk)
+        if n > PLC_WEEK_CAP:
+            errs.append(f'{wk}: 한 주 새 곳 {n} — {PLC_WEEK_CAP}곳까지')
+    known = base_ids | ids
+    patch = {}
+    for i, p in (f.get('patch') or {}).items():
+        w = f'patch[{i}]'
+        if base is not None and i not in known:
+            errs.append(w + ': 없는 장소 id'); continue
+        if not isinstance(p, dict) or set(p) - PLC_PATCH_K:
+            errs.append(w + f': 칸은 {sorted(PLC_PATCH_K)} 만'); continue
+        if p.get('st') not in (None, 'ok', 'closed', 'moved', 'unsure') or (p.get('vf') and not DATE_RE.match(str(p['vf']))):
+            errs.append(w + ': st(ok·closed·moved·unsure)·vf(날짜) 확인'); continue
+        if PRICE_RE.search(json.dumps(p, ensure_ascii=False)):
+            errs.append(w + ': 가격 글자'); continue
+        patch[i] = p
+    rank = {}
+    for i, r in (f.get('rank') or {}).items():
+        if not (isinstance(r, list) and len(r) == 2 and isinstance(r[0], int) and r[1] in (0, 1)):
+            errs.append(f'rank[{i}]: [순서, 0|1]'); break
+        rank[i] = r
+    led = f.get('ledger') or {}
+    if not isinstance(led, dict) or len(json.dumps(led, ensure_ascii=False)) > 200 * 1024:
+        errs.append('ledger 는 200KB 이하 {…}')
+    bad = PLC_CLAUDE_BLOCK.search(json.dumps({'p': places, 'x': patch}, ensure_ascii=False))
+    if bad:
+        errs.append(f'robots 가 Claude 봇을 막는 출처가 들어 있음: {bad.group(0)}')
+    out = {'v': 1, 'updated': str(f.get('updated') or ''), 'dow': f.get('dow') or '수', 'weeks': weeks, 'places': places, 'patch': patch, 'rank': rank, 'ledger': led}
+    for w in out['weeks']:
+        w['n'] = sum(1 for x in places if x['wk'] == w['wk'])
+    return out, errs, info
+
+def _prune(out, key, keep, max_kb, info, slim=None):
+    """크기 한도를 넘으면 오래된 주부터 정리. ①(여행지) 오래된 주는 기본 일정만 남김 ②그래도 넘으면 오래된 주를 통째로 뺌.
+    두 사람 기록이 가리키는 id(keep)와 가장 새 주는 남긴다."""
+    if _size_kb(out) <= max_kb:
+        return
+    wks = [w['wk'] for w in out['weeks']]
+    if slim is not None:
+        for wk in wks[:-slim] if len(wks) > slim else []:
+            for t in out[key]:
+                if t['wk'] == wk and len(t['plans']) > 1:
+                    t['plans'] = [p for p in t['plans'] if p.get('basic')]
+                    info['slimmed'] += 1
+            if _size_kb(out) <= max_kb:
+                return
+    for wk in wks[:-1]:
+        before = len(out[key])
+        out[key] = [x for x in out[key] if x['wk'] != wk or x['id'] in keep]
+        info['pruned'] += before - len(out[key])
+        if not any(x['wk'] == wk for x in out[key]):
+            out['weeks'] = [w for w in out['weeks'] if w['wk'] != wk]
+        info['prunedWeeks'].append(wk)
+        if _size_kb(out) <= max_kb:
+            return
+
+
+def _kst_now_iso():
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).replace(microsecond=0).isoformat()
+
+
+WEEKLY = {
+    'lib': {'file': 'lib.json.enc', 'items': 'books', 'check': lib_check, 'max': LIB_MAX_KB, 'pre': 'bkw-', 'base': 'books',
+            'empty': lambda: {'v': 1, 'updated': '', 'dow': '', 'weeks': [], 'books': []}},
+    'world': {'file': 'world.json.enc', 'items': 'trips', 'check': world_check, 'max': WORLD_MAX_KB, 'pre': 'trw-', 'base': 'trips',
+              'empty': lambda: {'v': 1, 'updated': '', 'dow': '', 'fx': {}, 'weeks': [], 'trips': [], 'patch': {}}},
+    'plc': {'file': 'plc.json.enc', 'items': 'places', 'check': plc_check, 'max': PLC_MAX_KB, 'pre': 'plw-', 'base': 'places',
+            'empty': lambda: {'v': 1, 'updated': '', 'dow': '수', 'weeks': [], 'places': [], 'patch': {}, 'rank': {}, 'ledger': {'dom': {}, 'rot': 0, 'cand': []}}},
+}
+
+
+def weekly_open(kind, a):
+    W = WEEKLY[kind]
+    s = load_settings(a.settings)
+    aes, _ = keys_for(s, a.repo)
+    p = os.path.join(a.repo, W['file'])
+    f = json.loads(open_bytes(aes, open(p, 'rb').read())) if os.path.exists(p) else W['empty']()
+    with open(a.out, 'w', encoding='utf-8') as fh:
+        json.dump(f, fh, ensure_ascii=False, indent=0)
+    os.chmod(a.out, 0o600)
+    L = f.get(W['items']) or []
+    rep = {'opened': a.out, 'updated': f.get('updated'), 'kb': round(_size_kb(f)), 'maxKb': W['max'], 'counts': {W['items']: len(L), 'weeks': len(f.get('weeks') or [])},
+           'weeks': [{'wk': w.get('wk'), 'n': w.get('n')} for w in (f.get('weeks') or [])[-4:]], 'lastIds': [x.get('id') for x in L[-3:]]}
+    if kind == 'world':
+        rep['counts']['patch'] = len(f.get('patch') or {})
+        rep['fx'] = (f.get('fx') or {}).get('기준일')
+    print(json.dumps(rep, ensure_ascii=False, indent=1))
+
+
+def weekly_seal(kind, a):
+    W = WEEKLY[kind]
+    s = load_settings(a.settings)
+    aes, mac = keys_for(s, a.repo)
+    try:
+        f = json.load(open(getattr(a, 'in'), encoding='utf-8'))
+    except Exception as e:
+        print(json.dumps({'ok': False, 'errors': [f'JSON 형식 오류: {e}'], 'counts': {}}, ensure_ascii=False, indent=1)); sys.exit(1)
+    base = _load_base(a.base, W['base'])
+    keep = _keep_refs(s, a.repo, a.sync, W['pre'])
+    out, errs, info = W['check'](f, base, keep, W['max'])
+    if out is not None:
+        bad = _blocked(out) or _blocked(f.get('weeks') or [])
+        if bad:
+            errs.append(f'자동 수집 금지 출처(robots.txt)가 들어 있음: {bad}')
+        sub, word = _secret_vals(s, a.repo, aes)
+        if _leak(f, sub, word):
+            errs.append('비밀값처럼 보이는 문자열이 있음(토큰·비밀번호·키 모양) — 지우고 다시')
+    counts = {}
+    if out is not None:
+        L = out[W['items']]
+        last = out['weeks'][-1]['wk'] if out['weeks'] else ''
+        counts = {W['items']: len(L), 'weeks': len(out['weeks']), 'lastWeek': last, 'thisWeek': sum(1 for x in L if x['wk'] == last),
+                  'kept': len(keep), 'pruned': info['pruned'], 'prunedWeeks': info['prunedWeeks'], 'kb': round(_size_kb(out))}
+        if kind == 'world':
+            counts |= {'patch': len(out['patch']), 'slimmed': info['slimmed'], 'fx': (out['fx'] or {}).get('기준일', '')}
+    if out is None or errs:
+        print(json.dumps({'ok': False, 'errors': errs[:40], 'counts': counts}, ensure_ascii=False, indent=1)); sys.exit(1)
+    out['updated'] = _kst_now_iso()
+    raw = json.dumps(out, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    if len(raw) > W['max'] * 1024:
+        print(json.dumps({'ok': False, 'errors': [f'너무 큼 {len(raw)//1024}KB ({W["max"]}KB 이하) — 이번 주 것을 줄여야 함'], 'counts': counts}, ensure_ascii=False, indent=1)); sys.exit(1)
+    ch = write_if_changed(os.path.join(a.repo, W['file']), seal_bytes(aes, mac, raw))
+    counts['kb'] = len(raw) // 1024
+    print(json.dumps({'ok': True, 'errors': [], 'counts': counts, 'changed': ch, 'file': W['file']}, ensure_ascii=False, indent=1))
+
+
+def cmd_libopen(a): weekly_open('lib', a)
+def cmd_libseal(a): weekly_seal('lib', a)
+def cmd_worldopen(a): weekly_open('world', a)
+def cmd_worldseal(a): weekly_seal('world', a)
+def cmd_plcopen(a): weekly_open('plc', a)
+def cmd_plcseal(a): weekly_seal('plc', a)
 
 
 def main():
@@ -860,10 +1529,16 @@ def main():
     p = sp.add_parser('newswants'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True)
     p = sp.add_parser('freshopen'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     p = sp.add_parser('freshseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--fresh', required=True); p.add_argument('--today')
+    for nm in ('libopen', 'worldopen', 'plcopen'):
+        p = sp.add_parser(nm); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
+    for nm in ('libseal', 'worldseal', 'plcseal'):
+        p = sp.add_parser(nm); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--in', required=True)
+        p.add_argument('--base', help='앱 소스 content/books.json·trips.json (unpacksrc 로 푼 것) — id·이름 겹침 검사'); p.add_argument('--sync', help='syncclone 한 폴더 — 두 사람 기록이 가리키는 것은 정리하지 않음')
+    p = sp.add_parser('notify'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--to', choices=('j', 'h', 'both'), default='both'); p.add_argument('--title'); p.add_argument('--msg', required=True)
     p = sp.add_parser('packsrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--src', required=True)
     p = sp.add_parser('unpacksrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     a = ap.parse_args()
-    {'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
+    {'libopen': cmd_libopen, 'libseal': cmd_libseal, 'worldopen': cmd_worldopen, 'worldseal': cmd_worldseal, 'plcopen': cmd_plcopen, 'plcseal': cmd_plcseal, 'notify': cmd_notify, 'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
      'keyfile': cmd_keyfile, 'push': cmd_push, 'cfg': cmd_cfg, 'syncinit': cmd_syncinit, 'syncclone': cmd_syncclone,
      'syncpull': cmd_syncpull, 'syncclean': cmd_syncclean}[a.cmd](a)
 
