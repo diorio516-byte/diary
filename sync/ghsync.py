@@ -312,7 +312,8 @@ def cmd_notify(a):
 
 
 # ---- 파이어 카드 (v35) — 항로도 DB card/current → fire.json.enc. 앱은 blocks 를 그리기만(읽기 전용, 두 폰 같은 화면) ----
-FIRE_T = {'title', 'stat', 'text', 'bar', 'line', 'next', 'checklist', 'warn'}
+FIRE_T = {'title', 'stat', 'text', 'bar', 'line', 'next', 'checklist', 'warn', 'calc', 'link'}   # v38: calc(숫자 바꿔 보기) · link(버튼)
+FIRE_LINK = re.compile(r'^https://claude\.ai/artifact/[A-Za-z0-9_-]{6,64}(#[A-Za-z0-9_-]{1,30})?$')
 FIRE_STATE = {'up', 'down', 'warn', 'start', 'none'}
 
 
@@ -363,10 +364,52 @@ def fire_check(f):
             nb['series'] = ser; nb['unit'] = s_(b.get('unit', ''), 6) or ''
             nb['marks'] = [[m[0], s_(str(m[1]), 12) or ''] for m in (b.get('marks') or [])[:6] if isinstance(m, list) and len(m) == 2 and num(m[0])]
             if not ser: errs.append(w + ': line.series 점 있는 선 1~4개')
+        elif t == 'calc':   # v38 숫자 바꿔 보기 — 계획 값은 따로(plan), 앱에서 움직인 값은 저장 안 함
+            nb['label'] = s_(b.get('label', '') or '', 20) or ''
+            nb['save'] = False
+        elif t == 'link':   # v38 버튼 — claude.ai 아티팩트 링크만
+            its = b.get('items') if isinstance(b.get('items'), list) else []
+            nb['items'] = [{'label': s_(x.get('label'), 12), 'url': x['url']} for x in its[:3]
+                           if isinstance(x, dict) and s_(x.get('label'), 12) and isinstance(x.get('url'), str) and FIRE_LINK.match(x['url'])]
+            if not nb['items']: errs.append(w + ': link.items 1~3개(claude.ai 아티팩트 주소만)')
         out.append({k: v for k, v in nb.items() if v is not None})
     if not 1 <= len(out) <= 30:
         errs.append('그릴 블록 1~30개')
     return errs, {'v': 1, 'updated': s_(str(f.get('updated', '')), 20) or '', 'source': s_(f.get('source', '') or '', 60) or '', 'blocks': out}
+
+
+def fire_plan_clean(v, depth=0):
+    """기준서 DB plan/current 의 values — 숫자·짧은 글·참거짓·작은 목록/객체만 남긴다(태그·링크 금지). 이상하면 None."""
+    bad = re.compile(r'https?://|<\s*/?\s*[a-z]|javascript:', re.I)
+    if depth > 4: return None
+    if isinstance(v, bool): return v
+    if isinstance(v, (int, float)): return v if v == v and abs(v) < 1e9 else None
+    if isinstance(v, str): return v if len(v) <= 40 and not bad.search(v) else None
+    if isinstance(v, list):
+        out = [fire_plan_clean(x, depth + 1) for x in v[:30]]
+        return out if all(x is not None for x in out) else None
+    if isinstance(v, dict):
+        out = {}
+        for k, x in list(v.items())[:40]:
+            if not (isinstance(k, str) and re.match(r'^[A-Za-z][A-Za-z0-9_]{0,23}$', k)): return None
+            c = fire_plan_clean(x, depth + 1)
+            if c is None: return None
+            out[k] = c
+        return out
+    return None
+
+
+def fire_plan_read(path):
+    """ArtifactData get plan/current 저장 파일 → {'values', 'updated'} 또는 None"""
+    try:
+        j = json.load(open(path, encoding='utf-8'))
+    except Exception:
+        return None
+    d = j.get('data') if isinstance(j, dict) and isinstance(j.get('data'), dict) else j
+    vals = fire_plan_clean(d.get('values')) if isinstance(d, dict) else None
+    if not isinstance(vals, dict) or not vals: return None
+    up = d.get('updated') if isinstance(d.get('updated'), str) and len(d['updated']) <= 20 else ''
+    return {'values': vals, 'updated': up}
 
 
 def cmd_fireseal(a):
@@ -385,13 +428,18 @@ def cmd_fireseal(a):
     if os.path.exists(p):
         try: old = json.loads(open_bytes(aes, open(p, 'rb').read()))
         except Exception: old = None
+    # v38 계획 값(기준서 DB plan/current) — 못 읽으면 지난 값 유지, 그것도 없으면 앱이 모델 기본값을 씀
+    plan = fire_plan_read(a.plan) if getattr(a, 'plan', None) else None
+    plan_note = 'new' if plan else ('kept' if (old or {}).get('plan') else 'none')
+    if not plan and isinstance((old or {}).get('plan'), dict): plan = old['plan']
+    if plan: card['plan'] = plan
     if old == card:
-        print(json.dumps({'ok': True, 'changed': False, 'notify': False}, ensure_ascii=False)); return
+        print(json.dumps({'ok': True, 'changed': False, 'notify': False, 'plan': plan_note}, ensure_ascii=False)); return
     raw = json.dumps(card, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
     if len(raw) > 256 * 1024:
         print(json.dumps({'ok': False, 'errors': ['256KB 넘음 — 지난 카드 유지']}, ensure_ascii=False)); return
     write_if_changed(p, seal_bytes(aes, mac, raw))
-    print(json.dumps({'ok': True, 'changed': True, 'notify': bool(old) and (old or {}).get('updated') != card['updated'], 'blocks': [b['t'] for b in card['blocks']], 'updated': card['updated']}, ensure_ascii=False))
+    print(json.dumps({'ok': True, 'changed': True, 'notify': bool(old) and (old or {}).get('updated') != card['updated'], 'blocks': [b['t'] for b in card['blocks']], 'updated': card['updated'], 'plan': plan_note}, ensure_ascii=False))
 
 
 # ---- 우리 집 (Cowork '신축 반전세 스코어보드' 아티팩트 → home.json.enc) ----
@@ -1760,7 +1808,7 @@ def main():
         p = sp.add_parser(nm); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--in', required=True)
         p.add_argument('--base', help='앱 소스 content/books.json·trips.json (unpacksrc 로 푼 것) — id·이름 겹침 검사'); p.add_argument('--sync', help='syncclone 한 폴더 — 두 사람 기록이 가리키는 것은 정리하지 않음')
     p = sp.add_parser('homeseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--in', required=True)
-    p = sp.add_parser('fireseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--in', required=True)
+    p = sp.add_parser('fireseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--in', required=True); p.add_argument('--plan')
     p = sp.add_parser('notify'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--to', choices=('j', 'h', 'both'), default='both'); p.add_argument('--title'); p.add_argument('--msg', required=True)
     p = sp.add_parser('packsrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--src', required=True)
     p = sp.add_parser('unpacksrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
