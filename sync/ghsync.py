@@ -311,6 +311,89 @@ def cmd_notify(a):
     print(json.dumps({'sent': sent}, ensure_ascii=False))
 
 
+# ---- 파이어 카드 (v35) — 항로도 DB card/current → fire.json.enc. 앱은 blocks 를 그리기만(읽기 전용, 두 폰 같은 화면) ----
+FIRE_T = {'title', 'stat', 'text', 'bar', 'line', 'next', 'checklist', 'warn'}
+FIRE_STATE = {'up', 'down', 'warn', 'start', 'none'}
+
+
+def fire_check(f):
+    """card/spec 그대로: 모르는 t 는 건너뛴다. 글 길이·개수 제한, 링크·태그 금지. (오류 목록, 다듬은 카드)"""
+    errs = []
+    if not isinstance(f, dict):
+        return ['카드가 객체가 아님'], None
+    f = f.get('data') if isinstance(f.get('data'), dict) and 'blocks' in f['data'] else f
+    bad = re.compile(r'https?://|<\s*/?\s*[a-z]|javascript:', re.I)
+    s_ = lambda v, n: v if isinstance(v, str) and len(v) <= n and not bad.search(v) else None
+    num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v == v and abs(v) < 1e7
+    out = []
+    for i, b in enumerate(f.get('blocks') if isinstance(f.get('blocks'), list) else []):
+        w = f'blocks[{i}]'
+        if not isinstance(b, dict) or b.get('t') not in FIRE_T:
+            continue
+        t = b['t']; nb = {'t': t}
+        if t == 'title':
+            nb['text'] = s_(b.get('text'), 40); nb['sub'] = s_(b.get('sub', ''), 60)
+            if nb['text'] is None: errs.append(w + ': title.text 40자')
+        elif t in ('text', 'warn'):
+            nb['text'] = s_(b.get('text'), 200 if t == 'text' else 100)
+            if not nb['text']: errs.append(w + f': {t}.text 글자 수')
+        elif t == 'next':
+            nb['label'] = s_(b.get('label', ''), 20); nb['text'] = s_(b.get('text'), 80)
+            if not nb['text']: errs.append(w + ': next.text 80자')
+        elif t == 'stat':
+            its = b.get('items') if isinstance(b.get('items'), list) else []
+            nb['items'] = [{'k': s_(x.get('k'), 20) or '', 'v': s_(str(x.get('v', '')), 20) or '', 's': s_(x.get('s', '') or '', 50) or '',
+                            'state': x.get('state') if x.get('state') in FIRE_STATE else 'none'} for x in its[:4] if isinstance(x, dict)]
+            if not nb['items']: errs.append(w + ': stat.items 1~4개')
+        elif t == 'bar':
+            its = b.get('items') if isinstance(b.get('items'), list) else []
+            nb['items'] = [{'k': s_(x.get('k'), 20) or '', 'v': x['v']} for x in its[:8] if isinstance(x, dict) and num(x.get('v'))]
+            nb['unit'] = s_(b.get('unit', ''), 6) or ''
+            if not nb['items']: errs.append(w + ': bar.items 숫자 v')
+        elif t == 'checklist':
+            its = b.get('items') if isinstance(b.get('items'), list) else []
+            nb['label'] = s_(b.get('label', ''), 20) or ''
+            nb['items'] = [{'text': s_(x.get('text'), 80) or '', 'done': bool(x.get('done'))} for x in its[:8] if isinstance(x, dict) and s_(x.get('text'), 80)]
+            if not nb['items']: errs.append(w + ': checklist.items 1~8개')
+        elif t == 'line':
+            ser = []
+            for x in (b.get('series') if isinstance(b.get('series'), list) else [])[:4]:
+                pts = [[p[0], p[1]] for p in (x.get('points') or [])[:400] if isinstance(p, list) and len(p) == 2 and num(p[0]) and num(p[1])] if isinstance(x, dict) else []
+                if pts: ser.append({'name': s_(x.get('name', ''), 20) or '', 'key': s_(x.get('key', ''), 12) or '', 'points': pts})
+            nb['series'] = ser; nb['unit'] = s_(b.get('unit', ''), 6) or ''
+            nb['marks'] = [[m[0], s_(str(m[1]), 12) or ''] for m in (b.get('marks') or [])[:6] if isinstance(m, list) and len(m) == 2 and num(m[0])]
+            if not ser: errs.append(w + ': line.series 점 있는 선 1~4개')
+        out.append({k: v for k, v in nb.items() if v is not None})
+    if not 1 <= len(out) <= 30:
+        errs.append('그릴 블록 1~30개')
+    return errs, {'v': 1, 'updated': s_(str(f.get('updated', '')), 20) or '', 'source': s_(f.get('source', '') or '', 60) or '', 'blocks': out}
+
+
+def cmd_fireseal(a):
+    """밤 기록이 ArtifactData get card/current 결과를 --in 으로 준다. 못 읽었으면(파일 없음·형식 오류) 지난 fire.json 을 그대로 둔다."""
+    s = load_settings(a.settings)
+    aes, mac = keys_for(s, a.repo)
+    try:
+        f = json.load(open(getattr(a, 'in'), encoding='utf-8'))
+    except Exception as e:
+        print(json.dumps({'ok': False, 'errors': [f'읽기 실패 {type(e).__name__} — 지난 카드 유지']}, ensure_ascii=False)); return
+    errs, card = fire_check(f)
+    if errs:
+        print(json.dumps({'ok': False, 'errors': errs[:20], 'note': '지난 카드 유지'}, ensure_ascii=False)); return
+    p = os.path.join(a.repo, 'fire.json.enc')
+    old = None
+    if os.path.exists(p):
+        try: old = json.loads(open_bytes(aes, open(p, 'rb').read()))
+        except Exception: old = None
+    if old == card:
+        print(json.dumps({'ok': True, 'changed': False, 'notify': False}, ensure_ascii=False)); return
+    raw = json.dumps(card, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    if len(raw) > 256 * 1024:
+        print(json.dumps({'ok': False, 'errors': ['256KB 넘음 — 지난 카드 유지']}, ensure_ascii=False)); return
+    write_if_changed(p, seal_bytes(aes, mac, raw))
+    print(json.dumps({'ok': True, 'changed': True, 'notify': bool(old) and (old or {}).get('updated') != card['updated'], 'blocks': [b['t'] for b in card['blocks']], 'updated': card['updated']}, ensure_ascii=False))
+
+
 def remote_url(s):
     return f"https://github.com/{s['user']}/{s['repo']}.git"
 
@@ -1546,11 +1629,12 @@ def main():
     for nm in ('libseal', 'worldseal', 'plcseal'):
         p = sp.add_parser(nm); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--in', required=True)
         p.add_argument('--base', help='앱 소스 content/books.json·trips.json (unpacksrc 로 푼 것) — id·이름 겹침 검사'); p.add_argument('--sync', help='syncclone 한 폴더 — 두 사람 기록이 가리키는 것은 정리하지 않음')
+    p = sp.add_parser('fireseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--in', required=True)
     p = sp.add_parser('notify'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--to', choices=('j', 'h', 'both'), default='both'); p.add_argument('--title'); p.add_argument('--msg', required=True)
     p = sp.add_parser('packsrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--src', required=True)
     p = sp.add_parser('unpacksrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     a = ap.parse_args()
-    {'libopen': cmd_libopen, 'libseal': cmd_libseal, 'worldopen': cmd_worldopen, 'worldseal': cmd_worldseal, 'plcopen': cmd_plcopen, 'plcseal': cmd_plcseal, 'notify': cmd_notify, 'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
+    {'fireseal': cmd_fireseal, 'libopen': cmd_libopen, 'libseal': cmd_libseal, 'worldopen': cmd_worldopen, 'worldseal': cmd_worldseal, 'plcopen': cmd_plcopen, 'plcseal': cmd_plcseal, 'notify': cmd_notify, 'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
      'keyfile': cmd_keyfile, 'push': cmd_push, 'cfg': cmd_cfg, 'syncinit': cmd_syncinit, 'syncclone': cmd_syncclone,
      'syncpull': cmd_syncpull, 'syncclean': cmd_syncclean}[a.cmd](a)
 
