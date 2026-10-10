@@ -394,6 +394,136 @@ def cmd_fireseal(a):
     print(json.dumps({'ok': True, 'changed': True, 'notify': bool(old) and (old or {}).get('updated') != card['updated'], 'blocks': [b['t'] for b in card['blocks']], 'updated': card['updated']}, ensure_ascii=False))
 
 
+# ---- 우리 집 (Cowork '신축 반전세 스코어보드' 아티팩트 → home.json.enc) ----
+HOME_FINAL = ['S클래스더제니스', '더샵염주센트럴파크', '힐스테이트월산', '무등산자이앤어울림(1단지)', '계림아이파크SK뷰']
+HOME_RESERVE = ['힐스테이트신용더리버']
+HOME_PRESETS = {'equal': None,
+                'commute': {'price': 12, 'age': 8, 'brand': 8, 'scale': 6, 'commute': 30, 'ktx': 8, 'subway': 6, 'mart': 8, 'parking': 6, 'stability': 8},
+                'value': {'price': 30, 'age': 8, 'brand': 8, 'scale': 8, 'commute': 10, 'ktx': 6, 'subway': 6, 'mart': 8, 'parking': 6, 'stability': 10},
+                'product': {'price': 8, 'age': 20, 'brand': 20, 'scale': 18, 'commute': 8, 'ktx': 4, 'subway': 4, 'mart': 6, 'parking': 8, 'stability': 4},
+                'life': {'price': 8, 'age': 6, 'brand': 6, 'scale': 6, 'commute': 12, 'ktx': 16, 'subway': 18, 'mart': 18, 'parking': 6, 'stability': 4}}
+HOME_TOL = 0.10   # KB 와 실거래가 10% 안이면 일치
+HOME_AB = {'S클래스더제니스': 'S클', '더샵염주센트럴파크': '염주', '힐스테이트월산': '월산', '무등산자이앤어울림1단지': '무등', '계림아이파크SK뷰': '계림', '힐스테이트신용더리버': '신용'}
+
+
+def _hkey(n):
+    return re.sub(r'[\s()·]', '', str(n or ''))
+
+
+def home_verify(r):
+    """검증 표시: ok(실거래·KB 일치) · warn(불일치) · one(단일 출처). 월세(보증금 5천 기준)와 전세를 비교."""
+    rep = r.get('rep') or {}; a = r.get('act') or {}
+    kb = bool(rep.get('kb'))
+    deals = (a.get('n_wolse') or 0) >= 2 and a.get('r5') is not None
+    if not kb or not deals:
+        return {'s': 'one', 'by': 'KB' if kb else ('실거래' if deals else '추정'),
+                't': ('KB 시세만 있어요' if kb else (f"실거래 {a.get('n_wolse') or 0}건만 있어요(KB 시세 없음)" if a.get('n_wolse') else '매물 호가로 추정했어요'))}
+    pairs = []
+    kr = r.get('e5') if r.get('e5') is not None else rep.get('kbr')
+    if kr: pairs.append(('월세', kr, a['r5'], '만'))
+    if rep.get('jeonse_mid') and a.get('jeonse'): pairs.append(('전세', rep['jeonse_mid'], a['jeonse'], ''))
+    worst = 0.0; parts = []
+    for nm, k, x, u in pairs:
+        d = (x - k) / k
+        worst = max(worst, abs(d))
+        fm = (lambda v: f'{v}만') if u else (lambda v: (f'{v // 10000}억 {v % 10000:,}' if v % 10000 else f'{v // 10000}억') if v >= 10000 else f'{v:,}만')
+        parts.append(f"{nm} KB {fm(k)} · 실거래 {fm(x)} ({'+' if d >= 0 else ''}{round(d * 100)}%)")
+    return {'s': 'ok' if worst <= HOME_TOL else 'warn', 'gap': round(worst * 100), 't': ' / '.join(parts)}
+
+
+def home_build(d, final=None, reserve=None):
+    keys = d['keys']
+    pre = {k: (v or {x: 10 for x in keys}) for k, v in HOME_PRESETS.items()}
+    final = d.get('final') or final or HOME_FINAL
+    reserve = d.get('reserve') or reserve or HOME_RESERVE
+    anchors = d.get('anchors') or []
+    rows = []
+    for r in d['rows']:
+        a = r.get('act') or {}; rep = r.get('rep') or {}
+        cma = r.get('cmA') or []
+        o = {'id': r['id'], 'n': r['name'], 'z': r['zone'], 'rg': r['region'], 'dong': r.get('dong') or '',
+             'addr': (r.get('addr') or '').replace('전남광주통합특별시', '광주'), 'lat': r.get('lat'), 'lng': r.get('lng'),
+             'mv': r.get('movein') or '', 'hh': r.get('hh'), 'fl': r.get('fl'), 'brand': r.get('brand') or '',
+             'bld': (r.get('builder') or '').split(',')[0].replace('(주)', '').replace('주식회사', '').strip(),
+             'tier': r.get('tier'), 'park': r.get('park'), 'heat': r.get('heat') or '', 'jeonse': r.get('jeonse'),
+             'r5': r.get('e5') if r.get('e5') is not None else r.get('r5'), 'r10': r.get('e10') if r.get('e10') is not None else r.get('r10'),
+             'psrc': r.get('psrc') or '', 'src': r.get('src') or '', 'cm': r.get('cm'),
+             'ktx': r.get('ktx') or '', 'ktxm': r.get('ktxm'), 'sub': r.get('sub') or '', 'subk': r.get('subk'),
+             'mart': r.get('mart') or '', 'martk': r.get('martk'), 'naver': r.get('naver'), 'sp': rep.get('sp'), 'rooms': rep.get('rooms'), 'baths': rep.get('baths'),
+             's': r['s'], 'g': r['g'], 'rank': r.get('rank'), 'total': r.get('total'), 'jr': r.get('jr'),
+             'types': [{'nm': t.get('nm') or '', 'sp': t.get('sp'), 'hh': t.get('hh'), 'r5': t.get('r5'), 'r10': t.get('r10')} for t in (r.get('types') or [])[:4]],
+             'act': {'n': a.get('n_wolse') or 0, 'r5': a.get('r5'), 'jeonse': a.get('jeonse'),
+                     'recent': [[x.get('d'), x.get('ar'), x.get('fl'), x.get('dep'), x.get('rent')] for x in (a.get('recent') or [])[:5]]},
+             'vf': home_verify(r)}
+        if anchors and len(cma) == len(anchors) and len(set(cma)) > 1:
+            o['cmA'] = [round(x, 1) if isinstance(x, (int, float)) else None for x in cma]
+        rows.append(o)
+    by = {_hkey(o['n']): o for o in rows}
+    pick = []
+    for i, n in enumerate(list(final) + list(reserve)):
+        o = by.get(_hkey(n))
+        if not o: continue
+        o['pick'] = 'final' if i < len(final) else 'reserve'
+        o['ab'] = HOME_AB.get(_hkey(o['n'])) or re.sub(r'^(힐스테이트|더샵|e편한세상|자이|아이파크|푸르지오|롯데캐슬|SK뷰)', '', o['n'])[:2] or o['n'][:2]
+        pick.append(o['id'])
+    ash = [re.sub(r'\s*\(동구 도심\)', '', x).replace('혁신도시(나주)', '(나주)') for x in anchors]
+    return {'v': 2, 'generated': d.get('generated', ''), 'dest': d.get('dest', ''), 'anchors': anchors, 'ash': ash, 'keys': keys, 'labels': d['labels'], 'presets': pre,
+            'pick': pick, 'tol': round(HOME_TOL * 100),
+            'src': 'Cowork 신축 반전세 스코어보드 · KB부동산 단지·시세 · 국토부 전월세 실거래 · OSRM 자동차 소요시간(정체 미반영)',
+            'rows': rows}
+
+
+def home_src_from(path):
+    """Artifact read 가 저장한 HTML(또는 <script id=data> 를 꺼낸 JSON) → 원본 dict"""
+    raw = open(path, encoding='utf-8').read()
+    if raw.lstrip().startswith('{'):
+        return json.loads(raw)
+    m = re.search(r'<script id="data" type="application/json">(.*?)</script>', raw, re.S)
+    if not m:
+        raise ValueError('스코어보드 자료(<script id="data">)를 못 찾음')
+    return json.loads(m.group(1))
+
+
+def home_check(h):
+    errs = []
+    if not isinstance(h.get('rows'), list) or len(h['rows']) < 20: errs.append('단지 수가 너무 적음')
+    for k in ('keys', 'labels', 'presets'):
+        if not h.get(k): errs.append(f'{k} 없음')
+    for r in h.get('rows', [])[:400]:
+        if not isinstance(r.get('id'), int) or not r.get('n') or not isinstance(r.get('s'), dict):
+            errs.append(f"단지 형식 오류 {r.get('n')}"); break
+    if len([i for i in h.get('pick', []) if i]) < 3: errs.append('최종 후보를 3곳도 못 찾음(이름이 바뀌었나?)')
+    return errs
+
+
+def cmd_homeseal(a):
+    """밤 기록: Artifact read 로 받은 스코어보드 HTML 을 --in 으로. 못 읽거나 이상하면 지난 home.json.enc 그대로."""
+    s = load_settings(a.settings)
+    aes, mac = keys_for(s, a.repo)
+    try:
+        h = home_build(home_src_from(getattr(a, 'in')))
+    except Exception as e:
+        print(json.dumps({'ok': False, 'errors': [f'읽기 실패 {type(e).__name__}: {str(e)[:80]} — 지난 우리 집 유지']}, ensure_ascii=False)); return
+    errs = home_check(h)
+    if errs:
+        print(json.dumps({'ok': False, 'errors': errs, 'note': '지난 우리 집 유지'}, ensure_ascii=False)); return
+    p = os.path.join(a.repo, 'home.json.enc')
+    old = None
+    if os.path.exists(p):
+        try: old = json.loads(open_bytes(aes, open(p, 'rb').read()))
+        except Exception: old = None
+    pk = [next(r['n'] for r in h['rows'] if r['id'] == i) for i in h['pick']]
+    vf = {r['n']: r['vf']['s'] for r in h['rows'] if r.get('pick')}
+    if old == h:
+        print(json.dumps({'ok': True, 'changed': False, 'rows': len(h['rows'])}, ensure_ascii=False)); return
+    raw = json.dumps(h, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    if len(raw) > 2 * 1024 * 1024:
+        print(json.dumps({'ok': False, 'errors': ['2MB 넘음 — 지난 우리 집 유지']}, ensure_ascii=False)); return
+    write_if_changed(p, seal_bytes(aes, mac, raw))
+    print(json.dumps({'ok': True, 'changed': True, 'rows': len(h['rows']), 'generated': h['generated'], 'pick': pk, 'verify': vf,
+                      'was': (old or {}).get('generated')}, ensure_ascii=False))
+
+
 def remote_url(s):
     return f"https://github.com/{s['user']}/{s['repo']}.git"
 
@@ -1629,12 +1759,13 @@ def main():
     for nm in ('libseal', 'worldseal', 'plcseal'):
         p = sp.add_parser(nm); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--in', required=True)
         p.add_argument('--base', help='앱 소스 content/books.json·trips.json (unpacksrc 로 푼 것) — id·이름 겹침 검사'); p.add_argument('--sync', help='syncclone 한 폴더 — 두 사람 기록이 가리키는 것은 정리하지 않음')
+    p = sp.add_parser('homeseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--in', required=True)
     p = sp.add_parser('fireseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--in', required=True)
     p = sp.add_parser('notify'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--to', choices=('j', 'h', 'both'), default='both'); p.add_argument('--title'); p.add_argument('--msg', required=True)
     p = sp.add_parser('packsrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--src', required=True)
     p = sp.add_parser('unpacksrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     a = ap.parse_args()
-    {'fireseal': cmd_fireseal, 'libopen': cmd_libopen, 'libseal': cmd_libseal, 'worldopen': cmd_worldopen, 'worldseal': cmd_worldseal, 'plcopen': cmd_plcopen, 'plcseal': cmd_plcseal, 'notify': cmd_notify, 'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
+    {'homeseal': cmd_homeseal, 'fireseal': cmd_fireseal, 'libopen': cmd_libopen, 'libseal': cmd_libseal, 'worldopen': cmd_worldopen, 'worldseal': cmd_worldseal, 'plcopen': cmd_plcopen, 'plcseal': cmd_plcseal, 'notify': cmd_notify, 'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
      'keyfile': cmd_keyfile, 'push': cmd_push, 'cfg': cmd_cfg, 'syncinit': cmd_syncinit, 'syncclone': cmd_syncclone,
      'syncpull': cmd_syncpull, 'syncclean': cmd_syncclean}[a.cmd](a)
 

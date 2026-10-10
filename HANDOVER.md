@@ -106,3 +106,4 @@ python3 sync/ghsync.py pages --settings <설정.json> --repo . --app <빌드된 
 - v33(2026-10-08): 리뷰 확인 — 밤마다 재준 PC 크롬으로 카카오맵·구글 지도 등 화면 숫자를 사람 속도로 확인해 `chk.json.enc` 에 쌓고, 앱이 받아 식장 점수를 다시 매기고 카드에 ⭐ 줄(✓/⚠/단일)을 보여 줌. 자세히: work/src/HANDOFF.md v33 · tools/WEEKLY_RUNBOOK.md 「크롬 확인」.
 - v34(2026-10-10): 나와의 약속(다짐) — 저녁에 「지켰어/못 지켰어」, 며칠째 지키는지·최고 기록·지난 28일, 나만 보기. 자세히: work/src/HANDOFF.md v34.
 - v35(2026-10-10): 우리 탭 「파이어」 카드 — 항로도 DB card/current 를 밤마다 fire.json.enc 로 옮겨 블록 8종으로 그림(읽기 전용·두 폰 같음). **돈 숫자 예외로 등록**(우리 집·해외여행·부탁하기 결과·결혼 준비·파이어). 알림은 재준만. 자세히: work/src/HANDOFF.md v35.
+- v36(2026-10-10): 우리 집 — 스코어보드 최신판(직장 후보 9곳별 출퇴근 cmA) 반영 · 맨 위 「최종 후보 5곳 + 예비 1」(S클래스더제니스·더샵염주센트럴파크·힐스테이트월산·무등산자이앤어울림1단지·계림아이파크SK뷰 / 예비 힐스테이트신용더리버) · 단지마다 검증 표시(✓ 실거래·KB 10% 안 일치 / ⚠ 불일치 / 단일 출처) · 「조건 › 현지 직장」. 밤 기록이 스코어보드를 Artifact read → `ghsync homeseal` 로 바뀐 때만 home.json.enc 다시 잠금. 최종 후보 목록은 ghsync.py HOME_FINAL/HOME_RESERVE(스코어보드 자료에 final/reserve 가 생기면 그게 우선). 자세히: work/src/HANDOFF.md v36.
