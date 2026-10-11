@@ -1027,6 +1027,155 @@ def cmd_newswants(a):
     print(json.dumps({'wants': sorted(out.values(), key=lambda x: x.get('s') or '')}, ensure_ascii=False, indent=1))
 
 
+# ---------- v41 놀이 비서: AI 놀이 편지(plan.json.enc) ----------
+# 매일 아침 예약 작업(Claude)이 plancontext 로 「둘의 지금」을 한 파일로 모아 읽고 → plan.json 을 쓰고 → planseal 로 검사·잠금.
+# 앱(09zp)은 plan.json.enc 를 받아 맨 위에 편지 한 줄 + 고른 후보 가산점 + 아이디어를 후보로 넣는다. 나만 보기(p)·me-* 기록은 읽지 않는다.
+PLAN_BAD = re.compile(r'(\d[\d,]*\s*원|https?://|010-\d|☎|@[a-z0-9.-]+\.[a-z]{2,})', re.I)
+PLAN_RECENT_K = ('note', 'thx', 'mood', 'food', 'place', 'dlog', 'went', 'wish', 'miss', 'bal', 'pl', 'apx', 'wc', 'amen', 'fq', 'gthx', 'photo', 'prv', 'ans')
+CITY_LL = {'청주': (36.642, 127.489), '광주': (35.160, 126.851)}
+
+
+def _plan_weather(days=4):
+    import urllib.request
+    out = {}
+    for city, (la, lo) in CITY_LL.items():
+        u = (f'https://api.open-meteo.com/v1/forecast?latitude={la}&longitude={lo}&timezone=Asia%2FSeoul&forecast_days={days}'
+             '&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunset')
+        j = None
+        for _ in range(2):
+            try:
+                j = json.loads(urllib.request.urlopen(u, timeout=15).read()); break
+            except Exception:
+                j = None
+        try:
+            dl = (j or {}).get('daily') or {}
+            if not dl:
+                raise ValueError('no daily')
+            out[city] = [{'d': d, 'code': dl['weathercode'][i], 'tmax': dl['temperature_2m_max'][i], 'tmin': dl['temperature_2m_min'][i],
+                          'pp': (dl.get('precipitation_probability_max') or [None] * 9)[i], 'sunset': str((dl.get('sunset') or [''] * 9)[i])[11:16]}
+                         for i, d in enumerate(dl.get('time') or [])]
+        except Exception as e:
+            out[city] = None
+    return out
+
+
+def cmd_plancontext(a):
+    import datetime as _dt
+    s = load_settings(a.settings)
+    aes, _ = keys_for(s, a.repo)
+    key = sync_key(s, a.repo)
+    recs, bad = sync_records(key, a.sync)
+    today = _kst_today()
+    t0 = _dt.date.fromisoformat(today)
+    days = [(t0 + _dt.timedelta(days=i)).isoformat() for i in range(3)]
+    since = (t0 - _dt.timedelta(days=7)).isoformat()
+    live = [r for r in recs.values() if isinstance(r, dict) and not r.get('del') and not r.get('p')]
+    plx = {}
+    for w in ('j', 'h'):
+        L = sorted([r for r in live if r.get('k') == 'plx' and r.get('w') == w and isinstance(r.get('v'), dict)], key=lambda r: r.get('t') or 0)
+        if L:
+            plx[w] = {'d': L[-1].get('d'), 'days': L[-1]['v'].get('days') or {}, 'tags': L[-1]['v'].get('tags') or []}
+    recent = {'j': [], 'h': []}
+    for r in sorted(live, key=lambda r: r.get('t') or 0):
+        k = r.get('k')
+        d = str(r.get('d') or r.get('dd') or '')
+        if k not in PLAN_RECENT_K or r.get('w') not in recent or not (since <= d <= today):
+            continue
+        txt = r.get('s') or r.get('n') or r.get('tt') or r.get('ref') or r.get('v') or r.get('win') or ''
+        if isinstance(txt, (dict, list)):
+            txt = r.get('f') or k
+        txt = re.sub(r'https?://\S+', '(링크)', str(txt))
+        recent[r['w']].append({'d': d, 'k': k, 'x': txt[:60], **({'st': r.get('st')} if r.get('st') else {})})
+    for w in recent:
+        recent[w] = recent[w][-60:]
+    meet = {}
+    for r in live:
+        if r.get('k') == 'mday' and re.match(r'^20\d{2}-\d{2}-\d{2}$', str(r.get('d'))) and str(r['d']) >= today:
+            cur = meet.get(r['d'])
+            if not cur or (r.get('t') or 0) > (cur.get('t') or 0):
+                meet[r['d']] = r
+    meet = [{'d': d, 'tm': r.get('tm') or '', 'pl': (r.get('pl') or '')[:40]} for d, r in sorted(meet.items()) if r.get('on')][:4]
+    exams = {}
+    for w in ('j', 'h'):
+        L = sorted([r for r in live if r.get('k') == 'stexam' and r.get('w') == w], key=lambda r: r.get('t') or 0)
+        if L and isinstance(L[-1].get('v'), list):
+            exams[w] = [{'n': str(x.get('n') or '시험')[:20], 'd': x.get('d')} for x in L[-1]['v'] if isinstance(x, dict) and str(x.get('d') or '') >= today][:3]
+    news = []
+    p = os.path.join(a.repo, 'news.json.enc')
+    if os.path.exists(p):
+        try:
+            n = json.loads(open_bytes(aes, open(p, 'rb').read()))
+            wants = {}
+            for r in live:
+                if r.get('k') == 'gw' and r.get('ref'):
+                    k2 = (r['ref'], r.get('w'))
+                    if k2 not in wants or (r.get('t') or 0) > (wants[k2].get('t') or 0):
+                        wants[k2] = r
+            for x in n.get('items', []):
+                s0, e0 = str(x.get('s') or ''), str(x.get('e') or x.get('s') or '')
+                op = str(x.get('open') or '')[:10]
+                if (s0 <= days[-1] and e0 >= today) or (today <= op <= days[-1]):
+                    who = [w for w in ('j', 'h') if (wants.get((x.get('id'), w)) or {}).get('v')]
+                    news.append({'id': x.get('id'), 'cat': x.get('cat'), 't': (x.get('t') or '')[:50], 's': s0, 'e': e0, 'tm': x.get('tm') or '', 'city': x.get('city') or '',
+                                 'open': x.get('open') or '', 'want': who})
+        except Exception:
+            pass
+    ctx = {'v': 1, 'today': today, 'days': days, 'people': {'j': {'n': '재준', 'city': '청주'}, 'h': {'n': '현지', 'city': '광주'}},
+           'plx': plx, 'recent': recent, 'meet': meet, 'exams': exams, 'news': news[:24], 'weather': _plan_weather(4)}
+    with open(a.out, 'w', encoding='utf-8') as f:
+        json.dump(ctx, f, ensure_ascii=False, indent=1)
+    print(json.dumps({'ok': True, 'out': a.out, 'plx': {w: v.get('d') for w, v in plx.items()}, 'recent': {w: len(v) for w, v in recent.items()},
+                      'meet': meet[:1], 'news': len(news), 'weather': {c: bool(v) for c, v in ctx['weather'].items()}, 'badFiles': len(bad)}, ensure_ascii=False))
+
+
+def _plan_txt(v, n, errs, where):
+    v = str(v or '').strip()
+    if PLAN_BAD.search(v):
+        errs.append(f'{where}: 금지 흔적(가격·주소·전화·URL)')
+    if len(v) > n:
+        errs.append(f'{where}: {len(v)}자 > {n}')
+    return v[:n]
+
+
+def cmd_planseal(a):
+    import datetime as _dt
+    s = load_settings(a.settings)
+    aes, mac = keys_for(s, a.repo)
+    raw = json.load(open(a.plan, encoding='utf-8'))
+    today = _dt.date.fromisoformat(_kst_today())
+    lo, hi = (today - _dt.timedelta(days=1)).isoformat(), (today + _dt.timedelta(days=6)).isoformat()
+    errs, out = [], {}
+    for d, x in sorted((raw.get('days') or {}).items()):
+        if not re.match(r'^20\d{2}-\d{2}-\d{2}$', d) or not (lo <= d <= hi) or not isinstance(x, dict):
+            errs.append(f'{d}: 날짜 범위 밖(어제~6일 뒤만)'); continue
+        day = {}
+        for who in ('both', 'j', 'h'):
+            y = x.get(who)
+            if not isinstance(y, dict):
+                continue
+            o = {}
+            if y.get('t'): o['t'] = _plan_txt(y['t'], 40, errs, f'{d}.{who}.t')
+            if y.get('m'): o['m'] = _plan_txt(y['m'], 240, errs, f'{d}.{who}.m')
+            if isinstance(y.get('pick'), list) and who != 'both':
+                o['pick'] = [str(p)[:80] for p in y['pick'] if p][:6]
+            ideas = []
+            for i, it in enumerate((y.get('ideas') or [])[:3]):
+                if isinstance(it, dict) and it.get('t'):
+                    ideas.append({'t': _plan_txt(it['t'], 24, errs, f'{d}.{who}.ideas{i}.t'), 'd': _plan_txt(it.get('d'), 90, errs, f'{d}.{who}.ideas{i}.d'),
+                                  'slot': it.get('slot') if it.get('slot') in ('now', 'eve', 'heart') else 'eve'})
+            if ideas: o['ideas'] = ideas
+            if o: day[who] = o
+        if day: out[d] = day
+    if errs:
+        print(json.dumps({'ok': False, 'errors': errs[:30]}, ensure_ascii=False, indent=1)); sys.exit(1)
+    if not out:
+        print(json.dumps({'ok': False, 'errors': ['days 가 비었음']}, ensure_ascii=False)); sys.exit(1)
+    obj = {'v': 1, 'made': _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).strftime('%Y-%m-%dT%H:%M'), 'days': out}
+    data = json.dumps(obj, ensure_ascii=False, separators=(',', ':')).encode()
+    ch = write_if_changed(os.path.join(a.repo, 'plan.json.enc'), seal_bytes(aes, mac, data))
+    print(json.dumps({'ok': True, 'changed': bool(ch), 'days': sorted(out), 'bytes': len(data)}, ensure_ascii=False))
+
+
 # ---------- 매주 새 소재(fresh.json.enc) ----------
 FRESH_MAX = {'balance': 1500, 'quiz': 600, 'imagine': 600, 'dates': 1000, 'courses': 200, 'books': 30, 'wed': 30}   # v22: 쌓이도록 크게(재준 요청 「데이터량 늘리기」)
 FRESH_MAX_KB = 2 * 1024
@@ -1890,6 +2039,8 @@ def main():
     p = sp.add_parser('syncclean'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True); p.add_argument('--data', required=True)
     p = sp.add_parser('newsopen'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     p = sp.add_parser('newsseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--news', required=True); p.add_argument('--today')
+    p = sp.add_parser('plancontext'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True); p.add_argument('--out', required=True)
+    p = sp.add_parser('planseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--plan', required=True)
     p = sp.add_parser('newswants'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True)
     p = sp.add_parser('freshopen'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     p = sp.add_parser('freshseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--fresh', required=True); p.add_argument('--today')
@@ -1904,7 +2055,7 @@ def main():
     p = sp.add_parser('packsrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--src', required=True)
     p = sp.add_parser('unpacksrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     a = ap.parse_args()
-    {'homeseal': cmd_homeseal, 'fireseal': cmd_fireseal, 'libopen': cmd_libopen, 'libseal': cmd_libseal, 'worldopen': cmd_worldopen, 'worldseal': cmd_worldseal, 'plcopen': cmd_plcopen, 'plcseal': cmd_plcseal, 'mvwopen': cmd_mvwopen, 'mvwseal': cmd_mvwseal, 'notify': cmd_notify, 'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
+    {'plancontext': cmd_plancontext, 'planseal': cmd_planseal, 'homeseal': cmd_homeseal, 'fireseal': cmd_fireseal, 'libopen': cmd_libopen, 'libseal': cmd_libseal, 'worldopen': cmd_worldopen, 'worldseal': cmd_worldseal, 'plcopen': cmd_plcopen, 'plcseal': cmd_plcseal, 'mvwopen': cmd_mvwopen, 'mvwseal': cmd_mvwseal, 'notify': cmd_notify, 'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
      'keyfile': cmd_keyfile, 'push': cmd_push, 'cfg': cmd_cfg, 'syncinit': cmd_syncinit, 'syncclone': cmd_syncclone,
      'syncpull': cmd_syncpull, 'syncclean': cmd_syncclean}[a.cmd](a)
 
