@@ -23,6 +23,7 @@
   freshopen --settings s.json --repo repo --out fresh.json   매주 새 소재(fresh.json.enc) 풀기, 없으면 빈 틀
   freshseal --settings s.json --repo repo --fresh fresh.json   검사 후 암호화
   libopen  --settings s.json --repo repo --out lib.json     매주 쌓이는 책(lib.json.enc) 풀기, 없으면 빈 틀
+  mvwopen/mvwseal                                          매주 영화책(mvw.json.enc) — libopen/libseal 과 같은 꼴(--base content/movies_base.json)
   libseal  --settings s.json --repo repo --in lib.json [--base content/books.json] [--sync syncdir]   검사·정리 후 암호화(ok·errors·counts)
   plcopen/plcseal  매주 장소(v22) plc.json — --base content/places.json (먹을 곳·잘 곳 새 곳·재확인·순서표·출처 장부)
   worldopen --settings s.json --repo repo --out world.json  매주 쌓이는 해외여행(world.json.enc) 풀기, 없으면 빈 틀
@@ -1704,6 +1705,92 @@ def _prune(out, key, keep, max_kb, info, slim=None):
             return
 
 
+MVW_MAX_KB = 2 * 1024          # mvw.json 평문 2MB (영화 1편 ≈ 1KB → 약 1년 치)
+MVW_WEEK_CAP = 40              # 한 주에 더할 수 있는 영화
+MV_CATS = ('romance', 'comedy', 'thriller', 'horror', 'action', 'sf', 'drama', 'animation')
+MV_ORG = ('N', 'L', 'G', 'Y', 'T', 'D', 'V', 'C', 'W', 'A')   # 넷플릭스 오리지널·라이선스·지브리·유튜브·극장·디즈니+·티빙·쿠팡플레이·왓챠·애플TV+
+
+
+def _film_check(b, w, errs):
+    if not all(_txt(b.get(k), 1, n) for k, n in (('ko', 60), ('country', 20), ('director', 40), ('tag', 80), ('syn', 320), ('talk', 80))):
+        errs.append(w + ': ko(60자)·country(20)·director(40)·tag(80)·syn(320)·talk(80) 모두 필요'); return None
+    if b.get('cat') not in MV_CATS:
+        errs.append(w + ': cat 은 ' + '·'.join(MV_CATS) + ' 중 하나'); return None
+    if b.get('origin') not in MV_ORG:
+        errs.append(w + ': origin 은 ' + '·'.join(MV_ORG) + ' 중 하나'); return None
+    yr, rt = b.get('year'), b.get('rt')
+    if not isinstance(yr, int) or isinstance(yr, bool) or not 1900 <= yr <= 2100:
+        errs.append(w + ': year 는 연도 정수'); return None
+    if rt is not None and (not isinstance(rt, int) or isinstance(rt, bool) or not 20 <= rt <= 400):
+        errs.append(w + ': rt 는 분(정수) 또는 null'); return None
+    m = b.get('m')
+    if not (isinstance(m, list) and len(m) == 3 and all(isinstance(x, int) and not isinstance(x, bool) and 1 <= x <= 5 for x in m)):
+        errs.append(w + ': m 은 [가볍게, 몰입, 여운] 1~5 정수 3개'); return None
+    cast = b.get('cast') or []
+    if not isinstance(cast, list) or len(cast) > 6 or not all(_txt(c, 1, 24) for c in cast):
+        errs.append(w + ': cast 6명까지(각 24자)'); return None
+    if b.get('orig') not in (None, '') and not _txt(b.get('orig'), 1, 90):
+        errs.append(w + ': orig 90자까지'); return None
+    src = _src_list(b.get('src') or [], w, errs, 2, 5)
+    if src is None:
+        return None
+    if any(k in b for k in ('price', 'pr', '가격', 'cost')) or PRICE_RE.search(json.dumps(b, ensure_ascii=False)):
+        errs.append(w + ': 영화에는 가격을 넣지 않음'); return None
+    keep = ('id', 'wk', 'cat', 'ko', 'orig', 'year', 'country', 'rt', 'director', 'origin', 'tag', 'syn', 'talk', 'm')
+    return {k: b[k] for k in keep if k in b and b[k] not in (None, '')} | {'rt': rt, 'cast': cast, 'r19': bool(b.get('r19')), 'src': src}
+
+
+def mvw_check(f, base=None, keep=frozenset(), max_kb=MVW_MAX_KB):
+    """mvw.json(매주 영화책) 검사·정리. 오류가 하나라도 있으면 올리지 않는다."""
+    errs, info = [], {'pruned': 0, 'prunedWeeks': []}
+    if not isinstance(f, dict) or f.get('v') != 1:
+        return None, ['맨 위 형식이 {"v":1,"weeks":[],"films":[]} 가 아님'], info
+    for k in f:
+        if k not in ('v', 'updated', 'dow', 'weeks', 'films'):
+            errs.append(f'모르는 칸 "{k}"')
+    weeks = _weeks_check(f, 'mvw', errs)
+    wkset = {w['wk'] for w in weeks}
+    films, ids, names = [], set(), {}
+    base_names = set()
+    for x in (base or []):
+        for v in (x.get('ko'), x.get('orig')):
+            if v:
+                base_names.add(_norm_key(v))
+    for i, b in enumerate(f.get('films') or []):
+        w = f'films[{i}]'
+        if not isinstance(b, dict):
+            errs.append(w + ': 모양이 {…} 가 아님'); continue
+        m = re.match(r'^mvw-(\d{4}w\d{2})-(\d{3})$', str(b.get('id', '')))
+        if not m:
+            errs.append(w + ': id 는 mvw-<주>-NNN (예 mvw-2026w42-001)'); continue
+        wk = str(b.get('wk') or '')
+        if not _wk_ok(wk) or _wk_slug(wk) != m.group(1):
+            errs.append(w + f': wk 와 id 의 주가 다름({b["id"]})'); continue
+        if wk not in wkset:
+            errs.append(w + f': weeks 에 {wk} 가 없음'); continue
+        if b['id'] in ids:
+            errs.append(w + f': id 겹침 {b["id"]}'); continue
+        y = _film_check(b, w, errs)
+        if not y:
+            continue
+        nk = _norm_key(y['ko'])
+        if nk in names:
+            errs.append(w + f': 같은 영화가 이미 있음 — {names[nk]}'); continue
+        if nk in base_names or (y.get('orig') and _norm_key(y['orig']) in base_names):
+            errs.append(w + ': 영화책에 이미 있는 영화'); continue
+        ids.add(y['id']); names[nk] = y['id']
+        films.append(y)
+    for wk in wkset:
+        n = sum(1 for b in films if b['wk'] == wk)
+        if n > MVW_WEEK_CAP:
+            errs.append(f'{wk}: 한 주 영화 {n}편 — {MVW_WEEK_CAP}편까지')
+    out = {'v': 1, 'updated': str(f.get('updated') or ''), 'dow': f.get('dow') or '금', 'weeks': weeks, 'films': films}
+    _prune(out, 'films', keep, max_kb, info, slim=None)
+    for w in out['weeks']:
+        w['n'] = sum(1 for b in out['films'] if b['wk'] == w['wk'])
+    return out, errs, info
+
+
 def _kst_now_iso():
     import datetime as _dt
     return _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).replace(microsecond=0).isoformat()
@@ -1714,6 +1801,8 @@ WEEKLY = {
             'empty': lambda: {'v': 1, 'updated': '', 'dow': '', 'weeks': [], 'books': []}},
     'world': {'file': 'world.json.enc', 'items': 'trips', 'check': world_check, 'max': WORLD_MAX_KB, 'pre': 'trw-', 'base': 'trips',
               'empty': lambda: {'v': 1, 'updated': '', 'dow': '', 'fx': {}, 'weeks': [], 'trips': [], 'patch': {}}},
+    'mvw': {'file': 'mvw.json.enc', 'items': 'films', 'check': mvw_check, 'max': MVW_MAX_KB, 'pre': 'mvw-', 'base': 'movies',
+            'empty': lambda: {'v': 1, 'updated': '', 'dow': '금', 'weeks': [], 'films': []}},
     'plc': {'file': 'plc.json.enc', 'items': 'places', 'check': plc_check, 'max': PLC_MAX_KB, 'pre': 'plw-', 'base': 'places',
             'empty': lambda: {'v': 1, 'updated': '', 'dow': '수', 'weeks': [], 'places': [], 'patch': {}, 'rank': {}, 'ledger': {'dom': {}, 'rot': 0, 'cand': []}}},
 }
@@ -1778,6 +1867,8 @@ def cmd_libopen(a): weekly_open('lib', a)
 def cmd_libseal(a): weekly_seal('lib', a)
 def cmd_worldopen(a): weekly_open('world', a)
 def cmd_worldseal(a): weekly_seal('world', a)
+def cmd_mvwopen(a): weekly_open('mvw', a)
+def cmd_mvwseal(a): weekly_seal('mvw', a)
 def cmd_plcopen(a): weekly_open('plc', a)
 def cmd_plcseal(a): weekly_seal('plc', a)
 
@@ -1802,9 +1893,9 @@ def main():
     p = sp.add_parser('newswants'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True)
     p = sp.add_parser('freshopen'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     p = sp.add_parser('freshseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--fresh', required=True); p.add_argument('--today')
-    for nm in ('libopen', 'worldopen', 'plcopen'):
+    for nm in ('libopen', 'worldopen', 'plcopen', 'mvwopen'):
         p = sp.add_parser(nm); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
-    for nm in ('libseal', 'worldseal', 'plcseal'):
+    for nm in ('libseal', 'worldseal', 'plcseal', 'mvwseal'):
         p = sp.add_parser(nm); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--in', required=True)
         p.add_argument('--base', help='앱 소스 content/books.json·trips.json (unpacksrc 로 푼 것) — id·이름 겹침 검사'); p.add_argument('--sync', help='syncclone 한 폴더 — 두 사람 기록이 가리키는 것은 정리하지 않음')
     p = sp.add_parser('homeseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--in', required=True)
@@ -1813,7 +1904,7 @@ def main():
     p = sp.add_parser('packsrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--src', required=True)
     p = sp.add_parser('unpacksrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     a = ap.parse_args()
-    {'homeseal': cmd_homeseal, 'fireseal': cmd_fireseal, 'libopen': cmd_libopen, 'libseal': cmd_libseal, 'worldopen': cmd_worldopen, 'worldseal': cmd_worldseal, 'plcopen': cmd_plcopen, 'plcseal': cmd_plcseal, 'notify': cmd_notify, 'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
+    {'homeseal': cmd_homeseal, 'fireseal': cmd_fireseal, 'libopen': cmd_libopen, 'libseal': cmd_libseal, 'worldopen': cmd_worldopen, 'worldseal': cmd_worldseal, 'plcopen': cmd_plcopen, 'plcseal': cmd_plcseal, 'mvwopen': cmd_mvwopen, 'mvwseal': cmd_mvwseal, 'notify': cmd_notify, 'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
      'keyfile': cmd_keyfile, 'push': cmd_push, 'cfg': cmd_cfg, 'syncinit': cmd_syncinit, 'syncclone': cmd_syncclone,
      'syncpull': cmd_syncpull, 'syncclean': cmd_syncclean}[a.cmd](a)
 
