@@ -43,6 +43,12 @@ def die(msg):
 
 
 def load_settings(p):
+    # v41.1: 설정 파일 없이 환경 변수 DIARY_PW 만으로(--settings env 또는 생략) — 비밀번호를 파일로 쓰지 않음
+    if not p or p == 'env':
+        pw = os.environ.get('DIARY_PW', '')
+        if not pw:
+            die('환경 변수 DIARY_PW 없음')
+        return {'user': 'diorio516-byte', 'token': os.environ.get('GH_TOKEN', '-'), 'pw': pw}
     with open(p, encoding='utf-8') as f:
         s = json.load(f)
     for k in ('user', 'token', 'pw'):
@@ -2039,8 +2045,8 @@ def main():
     p = sp.add_parser('syncclean'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True); p.add_argument('--data', required=True)
     p = sp.add_parser('newsopen'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     p = sp.add_parser('newsseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--news', required=True); p.add_argument('--today')
-    p = sp.add_parser('plancontext'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True); p.add_argument('--out', required=True)
-    p = sp.add_parser('planseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--plan', required=True)
+    p = sp.add_parser('plancontext'); p.add_argument('--settings', default='env'); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True); p.add_argument('--out', required=True)
+    p = sp.add_parser('planseal'); p.add_argument('--settings', default='env'); p.add_argument('--repo', required=True); p.add_argument('--plan', required=True)
     p = sp.add_parser('newswants'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True)
     p = sp.add_parser('freshopen'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     p = sp.add_parser('freshseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--fresh', required=True); p.add_argument('--today')
