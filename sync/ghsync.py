@@ -23,6 +23,8 @@
   freshopen --settings s.json --repo repo --out fresh.json   매주 새 소재(fresh.json.enc) 풀기, 없으면 빈 틀
   freshseal --settings s.json --repo repo --fresh fresh.json   검사 후 암호화
   libopen  --settings s.json --repo repo --out lib.json     매주 쌓이는 책(lib.json.enc) 풀기, 없으면 빈 틀
+  balinseal --in balin.json                                v43.1 밸런스 「우리 분석」 해석문(balin.json.enc) — 매달 점검 때 Claude 가 다시 씀
+  reportcontext/repseal                                    v43 우리 리포트(rep.json.enc) — 두 폰 rep 기록 → Claude 리포트(plancontext/planseal 과 같은 꼴, DIARY_PW)
   mvwopen/mvwseal                                          매주 영화책(mvw.json.enc) — libopen/libseal 과 같은 꼴(--base content/movies_base.json)
   libseal  --settings s.json --repo repo --in lib.json [--base content/books.json] [--sync syncdir]   검사·정리 후 암호화(ok·errors·counts)
   plcopen/plcseal  매주 장소(v22) plc.json — --base content/places.json (먹을 곳·잘 곳 새 곳·재확인·순서표·출처 장부)
@@ -1182,6 +1184,97 @@ def cmd_planseal(a):
     print(json.dumps({'ok': True, 'changed': bool(ch), 'days': sorted(out), 'bytes': len(data)}, ensure_ascii=False))
 
 
+# ---------- v43 우리 리포트 (rep.json.enc) — 두 폰의 「오늘 놀이 요약」 rep 기록 → 밤 예약 작업(Claude)이 리포트를 씀 ----------
+REP_MAX_DELTA = 4000
+def cmd_reportcontext(a):
+    """두 폰 rep 기록(k 'rep': d, sig, v{delta, full}) 중 최근 것들과 지난 리포트를 모아 ctx 로. 이름·돈 없음(앱이 그렇게 만듦)."""
+    import datetime as _dt
+    s = load_settings(a.settings)
+    aes, _ = keys_for(s, a.repo)
+    key = sync_key(s, a.repo)
+    recs, bad = sync_records(key, a.sync)
+    today = _kst_today()
+    t0 = _dt.date.fromisoformat(today)
+    days = [(t0 - _dt.timedelta(days=i)).isoformat() for i in range(0, 8)]
+    live = [r for r in recs.values() if isinstance(r, dict) and not r.get('del') and r.get('k') == 'rep' and isinstance(r.get('v'), dict) and str(r.get('d') or '') in days]
+    by_day = {}
+    for r in sorted(live, key=lambda r: r.get('t') or 0):
+        d = str(r['d']); v = r['v']
+        cur = by_day.get(d) or {'d': d, 'delta': '', 'full': '', 'w': []}
+        if v.get('delta') and len(str(v['delta'])) >= len(cur['delta']): cur['delta'] = str(v['delta'])[:REP_MAX_DELTA]
+        if v.get('full') and len(str(v['full'])) >= len(cur['full']): cur['full'] = str(v['full'])[:24000]
+        if r.get('w') in ('j', 'h') and r['w'] not in cur['w']: cur['w'].append(r['w'])
+        by_day[d] = cur
+    prev = None
+    p = os.path.join(a.repo, 'rep.json.enc')
+    if os.path.exists(p):
+        try: prev = json.loads(open_bytes(aes, open(p, 'rb').read()))
+        except Exception: prev = None
+    out = {'today': today, 'yesterday': days[1], 'days': [by_day[d] for d in days if d in by_day],
+           'prev': {k: prev.get(k) for k in ('d', 'title', 'one', 'ask')} if isinstance(prev, dict) else None,
+           'people': {'j': '재준(청주)', 'h': '현지(광주)'}, 'badFiles': len(bad)}
+    json.dump(out, open(a.out, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
+    print(json.dumps({'ok': True, 'days': [d['d'] for d in out['days']], 'hasYesterday': days[1] in by_day, 'hasToday': today in by_day, 'prev': (prev or {}).get('d')}, ensure_ascii=False))
+
+def rep_check(raw, today):
+    import datetime as _dt
+    errs = []
+    if not isinstance(raw, dict): return ['rep 가 객체가 아님'], None
+    d = str(raw.get('d') or '')
+    t0 = _dt.date.fromisoformat(today)
+    ok_days = {(t0 - _dt.timedelta(days=i)).isoformat() for i in range(0, 3)}
+    if d not in ok_days: errs.append('d 는 오늘·어제·그제 중 하나(YYYY-MM-DD)')
+    out = {'v': 1, 'd': d, 'title': _plan_txt(raw.get('title'), 40, errs, 'title'), 'one': _plan_txt(raw.get('one'), 140, errs, 'one')}
+    bl = raw.get('blocks')
+    if not isinstance(bl, list) or not (1 <= len(bl) <= 6): errs.append('blocks 는 1~6개')
+    else:
+        out['blocks'] = [{'h': _plan_txt(b.get('h'), 24, errs, f'blocks{i}.h'), 'p': _plan_txt(b.get('p'), 420, errs, f'blocks{i}.p')} for i, b in enumerate(bl) if isinstance(b, dict)]
+    if raw.get('ask'): out['ask'] = _plan_txt(raw['ask'], 120, errs, 'ask')
+    if raw.get('notify'): out['notify'] = _plan_txt(raw['notify'], 60, errs, 'notify')
+    txt = json.dumps(out, ensure_ascii=False)
+    if re.search(r'https?://|\d{2,3}-\d{3,4}-\d{4}|[0-9][0-9,]*\s*(원|만원|천원)', txt): errs.append('주소(URL)·전화·돈 숫자는 넣지 않는다')
+    return errs, out
+
+def cmd_repseal(a):
+    import datetime as _dt
+    s = load_settings(a.settings)
+    aes, mac = keys_for(s, a.repo)
+    raw = json.load(open(a.rep, encoding='utf-8'))
+    errs, out = rep_check(raw, _kst_today())
+    if errs:
+        print(json.dumps({'ok': False, 'errors': errs[:30]}, ensure_ascii=False, indent=1)); sys.exit(1)
+    out['made'] = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).strftime('%Y-%m-%dT%H:%M')
+    data = json.dumps(out, ensure_ascii=False, separators=(',', ':')).encode()
+    ch = write_if_changed(os.path.join(a.repo, 'rep.json.enc'), seal_bytes(aes, mac, data))
+    print(json.dumps({'ok': True, 'changed': bool(ch), 'd': out['d'], 'title': out['title'], 'notify': out.get('notify') or '', 'bytes': len(data)}, ensure_ascii=False))
+
+def cmd_balinseal(a):
+    """v43.1 밸런스 「우리 분석」 해석문(balin.json.enc) — 매달 점검 때 Claude 가 다시 쓴다. 앱은 빌드에 박힌 글 대신 이것을 보여 준다."""
+    import datetime as _dt
+    s = load_settings(a.settings)
+    aes, mac = keys_for(s, a.repo)
+    raw = json.load(open(getattr(a, 'in'), encoding='utf-8'))
+    errs = []
+    out = {'v': 1, 'd': str(raw.get('d') or _kst_today()), 'src': _plan_txt(raw.get('src') or '밸런스 게임 · 월간 점검', 80, errs, 'src'), 'one': _plan_txt(raw.get('one'), 140, errs, 'one')}
+    if not re.match(r'^20\d{2}-\d{2}-\d{2}$', out['d']): errs.append('d 는 YYYY-MM-DD')
+    for k, n, mx in (('strengths', 'strengths', 160), ('actions', 'actions', 160)):
+        L = raw.get(k)
+        if not isinstance(L, list) or not (1 <= len(L) <= 8): errs.append(f'{n} 는 1~8개 글 목록')
+        else: out[k] = [_plan_txt(x, mx, errs, f'{n}{i}') for i, x in enumerate(L)]
+    L = raw.get('diffs')
+    if not isinstance(L, list) or not (1 <= len(L) <= 8): errs.append('diffs 는 1~8개 {h,p}')
+    else: out['diffs'] = [{'h': _plan_txt(x.get('h'), 40, errs, f'diffs{i}.h'), 'p': _plan_txt(x.get('p'), 300, errs, f'diffs{i}.p')} for i, x in enumerate(L) if isinstance(x, dict)]
+    pr = raw.get('profiles') if isinstance(raw.get('profiles'), dict) else {}
+    out['profiles'] = {w: _plan_txt(pr.get(w), 220, errs, f'profiles.{w}') for w in ('j', 'h') if pr.get(w)}
+    txt = json.dumps(out, ensure_ascii=False)
+    if re.search(r'https?://|\d{2,3}-\d{3,4}-\d{4}|[0-9][0-9,]*\s*(원|만원|천원)', txt): errs.append('주소(URL)·전화·돈 숫자는 넣지 않는다')
+    if errs:
+        print(json.dumps({'ok': False, 'errors': errs[:30]}, ensure_ascii=False, indent=1)); sys.exit(1)
+    data = json.dumps(out, ensure_ascii=False, separators=(',', ':')).encode()
+    ch = write_if_changed(os.path.join(a.repo, 'balin.json.enc'), seal_bytes(aes, mac, data))
+    print(json.dumps({'ok': True, 'changed': bool(ch), 'd': out['d'], 'bytes': len(data)}, ensure_ascii=False))
+
+
 # ---------- 매주 새 소재(fresh.json.enc) ----------
 FRESH_MAX = {'balance': 1500, 'quiz': 600, 'imagine': 600, 'dates': 1000, 'courses': 200, 'books': 30, 'wed': 30}   # v22: 쌓이도록 크게(재준 요청 「데이터량 늘리기」)
 FRESH_MAX_KB = 2 * 1024
@@ -1204,7 +1297,7 @@ def fresh_check(f, today):
             errs.append(w + ': id 겹침'); continue
         if not all(isinstance(b.get(k), str) and 1 <= len(b[k]) <= 40 for k in ('a', 'b')) or not isinstance(b.get('c'), str) or not 1 <= len(b['c']) <= 6:
             errs.append(w + ': a·b(40자)·c(6자) 확인'); continue
-        seen.add(b['id']); out['balance'].append({'id': b['id'], 'a': b['a'], 'b': b['b'], 'c': b['c'], 'wk': str(b.get('wk') or out['week'])})
+        seen.add(b['id']); out['balance'].append({'id': b['id'], 'a': b['a'], 'b': b['b'], 'c': b['c'], 'wk': str(b.get('wk') or out['week']), **({'area': str(b['area'])[:20]} if isinstance(b.get('area'), str) and b.get('area') else {})})   # v43.1 영역 태그(우리 분석)
     for i, q in enumerate(f.get('quiz') or []):
         w = f'quiz[{i}]'
         if not isinstance(q, dict) or not re.match(r'^fz-[a-z0-9-]{2,30}$', str(q.get('id', ''))):
@@ -2047,6 +2140,9 @@ def main():
     p = sp.add_parser('newsseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--news', required=True); p.add_argument('--today')
     p = sp.add_parser('plancontext'); p.add_argument('--settings', default='env'); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True); p.add_argument('--out', required=True)
     p = sp.add_parser('planseal'); p.add_argument('--settings', default='env'); p.add_argument('--repo', required=True); p.add_argument('--plan', required=True)
+    p = sp.add_parser('reportcontext'); p.add_argument('--settings', default='env'); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True); p.add_argument('--out', required=True)
+    p = sp.add_parser('balinseal'); p.add_argument('--settings', default='env'); p.add_argument('--repo', required=True); p.add_argument('--in', required=True)
+    p = sp.add_parser('repseal'); p.add_argument('--settings', default='env'); p.add_argument('--repo', required=True); p.add_argument('--rep', required=True)
     p = sp.add_parser('newswants'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True)
     p = sp.add_parser('freshopen'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     p = sp.add_parser('freshseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--fresh', required=True); p.add_argument('--today')
@@ -2061,7 +2157,7 @@ def main():
     p = sp.add_parser('packsrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--src', required=True)
     p = sp.add_parser('unpacksrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     a = ap.parse_args()
-    {'plancontext': cmd_plancontext, 'planseal': cmd_planseal, 'homeseal': cmd_homeseal, 'fireseal': cmd_fireseal, 'libopen': cmd_libopen, 'libseal': cmd_libseal, 'worldopen': cmd_worldopen, 'worldseal': cmd_worldseal, 'plcopen': cmd_plcopen, 'plcseal': cmd_plcseal, 'mvwopen': cmd_mvwopen, 'mvwseal': cmd_mvwseal, 'notify': cmd_notify, 'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
+    {'plancontext': cmd_plancontext, 'planseal': cmd_planseal, 'reportcontext': cmd_reportcontext, 'repseal': cmd_repseal, 'balinseal': cmd_balinseal, 'homeseal': cmd_homeseal, 'fireseal': cmd_fireseal, 'libopen': cmd_libopen, 'libseal': cmd_libseal, 'worldopen': cmd_worldopen, 'worldseal': cmd_worldseal, 'plcopen': cmd_plcopen, 'plcseal': cmd_plcseal, 'mvwopen': cmd_mvwopen, 'mvwseal': cmd_mvwseal, 'notify': cmd_notify, 'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
      'keyfile': cmd_keyfile, 'push': cmd_push, 'cfg': cmd_cfg, 'syncinit': cmd_syncinit, 'syncclone': cmd_syncclone,
      'syncpull': cmd_syncpull, 'syncclean': cmd_syncclean}[a.cmd](a)
 
