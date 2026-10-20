@@ -1210,7 +1210,21 @@ def cmd_reportcontext(a):
     if os.path.exists(p):
         try: prev = json.loads(open_bytes(aes, open(p, 'rb').read()))
         except Exception: prev = None
-    out = {'today': today, 'yesterday': days[1], 'days': [by_day[d] for d in days if d in by_day],
+    # v43.2 쓰임 기록(use): 최근 30일 두 폰 합산 — 누른 수·머문 초(이름·내용 없음)
+    days30 = {(t0 - _dt.timedelta(days=i)).isoformat() for i in range(0, 30)}
+    use = {'days': 0, 'acts': {}, 'pages': {}, 'tabs': {}}
+    for r in recs.values():
+        if not (isinstance(r, dict) and not r.get('del') and r.get('k') == 'use' and isinstance(r.get('v'), dict) and str(r.get('d') or '') in days30):
+            continue
+        v = r['v']; use['days'] += 1
+        for k, n in (v.get('acts') or {}).items():
+            if isinstance(n, (int, float)): use['acts'][k] = use['acts'].get(k, 0) + int(n)
+        for box in ('pages', 'tabs'):
+            for k, x in (v.get(box) or {}).items():
+                if isinstance(x, dict):
+                    cur = use[box].setdefault(k, {'n': 0, 's': 0}); cur['n'] += int(x.get('n') or 0); cur['s'] += int(x.get('s') or 0)
+    use['acts'] = dict(sorted(use['acts'].items(), key=lambda kv: -kv[1])[:150])
+    out = {'today': today, 'yesterday': days[1], 'days': [by_day[d] for d in days if d in by_day], 'use': use,
            'prev': {k: prev.get(k) for k in ('d', 'title', 'one', 'ask')} if isinstance(prev, dict) else None,
            'people': {'j': '재준(청주)', 'h': '현지(광주)'}, 'badFiles': len(bad)}
     json.dump(out, open(a.out, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
@@ -1298,6 +1312,25 @@ def fresh_check(f, today):
         if not all(isinstance(b.get(k), str) and 1 <= len(b[k]) <= 40 for k in ('a', 'b')) or not isinstance(b.get('c'), str) or not 1 <= len(b['c']) <= 6:
             errs.append(w + ': a·b(40자)·c(6자) 확인'); continue
         seen.add(b['id']); out['balance'].append({'id': b['id'], 'a': b['a'], 'b': b['b'], 'c': b['c'], 'wk': str(b.get('wk') or out['week']), **({'area': str(b['area'])[:20]} if isinstance(b.get('area'), str) and b.get('area') else {})})   # v43.1 영역 태그(우리 분석)
+    # v43.3 연예인 월드컵 세트: {id wcs-…, t 40자, for j|h|both, items 8~32 {n 20자, sub 40자, img upload/thumb.wikimedia.org https, credit 90자, page}}
+    out['wcsets'] = []
+    for i, st in enumerate(f.get('wcsets') or []):
+        w = f'wcsets[{i}]'
+        if not isinstance(st, dict) or not re.match(r'^wcs-[a-z0-9-]{2,30}$', str(st.get('id', ''))):
+            errs.append(w + ': id는 wcs-로 시작'); continue
+        if st['id'] in seen:
+            errs.append(w + ': id 겹침'); continue
+        items = st.get('items')
+        if not isinstance(st.get('t'), str) or not 1 <= len(st['t']) <= 40 or not isinstance(items, list) or not 8 <= len(items) <= 32:
+            errs.append(w + ': t(40자)·items 8~32개 확인'); continue
+        ok_items = []
+        for j, x in enumerate(items):
+            if not isinstance(x, dict) or not isinstance(x.get('n'), str) or not 1 <= len(x['n']) <= 20 or not re.match(r'^https://(upload|thumb)\.wikimedia\.org/[^\s"<>]+$', str(x.get('img', ''))):
+                errs.append(f'{w}.items[{j}]: n(20자)·img(upload/thumb.wikimedia.org https) 확인'); break
+            ok_items.append({'id': f"{st['id']}-{j+1}", 'n': x['n'], 'sub': str(x.get('sub') or '')[:40], 'img': x['img'], 'credit': str(x.get('credit') or '')[:90], 'page': str(x.get('page') or '')[:200]})
+        if len(ok_items) != len(items):
+            continue
+        seen.add(st['id']); out['wcsets'].append({'id': st['id'], 't': st['t'], 'for': st.get('for') if st.get('for') in ('j', 'h', 'both') else 'both', 'items': ok_items, 'wk': str(st.get('wk') or out['week'])})
     for i, q in enumerate(f.get('quiz') or []):
         w = f'quiz[{i}]'
         if not isinstance(q, dict) or not re.match(r'^fz-[a-z0-9-]{2,30}$', str(q.get('id', ''))):
