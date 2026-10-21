@@ -145,3 +145,4 @@ python3 sync/ghsync.py pages --settings <설정.json> --repo . --app <빌드된 
 - v42.4(2026-10-20): 우리 성향 리포트(밸런스)·우리 리포트(놀이·기록 전부 → Claude 심리 리포트 글), 새 소재 예약 밸런스 25개(성향 축). 자세히 work/src/HANDOFF.md v42.4.
 - v43·v43.1(2026-10-20): 자동 우리 리포트(rep 기록·reportcontext/repseal·rep.json.enc·알림), 「우리 분석」(영역 8·해석문·balinseal), 커플 리포트 PDF 보관(docs/·repdocs.json.enc), 쿠폰 4·체크인 질문·서운함 규칙. 자세히 work/src/HANDOFF.md v43.
 - v43.2·v43.3(2026-10-20): 쓰임 기록(k 'use'·reportcontext use 합산·월간 점검 자율 정리), 연예인 이상형 월드컵(content/wc.json·fresh wcsets·Commons 사진+출처), CLAUDE.md 규칙 3개(쓰임·연예인·막히면 말 걸기). 자세히 HANDOFF v43.2~3.
+- v43.4(2026-10-21) 올림(627ac51): 홈 오늘 카드 없앰(오늘 칸 누르면 나옴). 매일 밤 「우리 리포트」 예약 작업 켬: 전용 채팅 「다이어리 우리 리포트」(session_01WX8XHPhWHbKw827TNYiwmY) · 예약 trig_01JUNyE7po2LknocSSkkFYrj (매일 23:23 KST, rep.json.enc 만 바꿈).
