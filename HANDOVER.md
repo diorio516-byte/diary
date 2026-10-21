@@ -148,3 +148,4 @@ python3 sync/ghsync.py pages --settings <설정.json> --repo . --app <빌드된 
 - v43.4(2026-10-21) 올림(627ac51): 홈 오늘 카드 없앰(오늘 칸 누르면 나옴). 매일 밤 「우리 리포트」 예약 작업 켬: 전용 채팅 「다이어리 우리 리포트」(session_01WX8XHPhWHbKw827TNYiwmY) · 예약 trig_01JUNyE7po2LknocSSkkFYrj (매일 23:23 KST, rep.json.enc 만 바꿈).
 - v43.5(2026-10-21) 올림(fcd6dd3): 홈 띠 2.5배(240px)·매일 다른 우리 사진(D.photos+폰 사진, 홈·떨어진 날 띠)·코스 카드 왼쪽 정렬 한 장씩. 자세히 HANDOFF v43.5.
 - v43.6(2026-10-21) 올림: 홈 제목에 오늘 날짜·요일 · 떨어진 날 카드 「접기 ∧/펼치기 ∨」 알약. 자세히 HANDOFF v43.6.
+- v43.7(2026-10-21) 올림: 홈 띠 240→168px.
