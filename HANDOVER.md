@@ -146,3 +146,4 @@ python3 sync/ghsync.py pages --settings <설정.json> --repo . --app <빌드된 
 - v43·v43.1(2026-10-20): 자동 우리 리포트(rep 기록·reportcontext/repseal·rep.json.enc·알림), 「우리 분석」(영역 8·해석문·balinseal), 커플 리포트 PDF 보관(docs/·repdocs.json.enc), 쿠폰 4·체크인 질문·서운함 규칙. 자세히 work/src/HANDOFF.md v43.
 - v43.2·v43.3(2026-10-20): 쓰임 기록(k 'use'·reportcontext use 합산·월간 점검 자율 정리), 연예인 이상형 월드컵(content/wc.json·fresh wcsets·Commons 사진+출처), CLAUDE.md 규칙 3개(쓰임·연예인·막히면 말 걸기). 자세히 HANDOFF v43.2~3.
 - v43.4(2026-10-21) 올림(627ac51): 홈 오늘 카드 없앰(오늘 칸 누르면 나옴). 매일 밤 「우리 리포트」 예약 작업 켬: 전용 채팅 「다이어리 우리 리포트」(session_01WX8XHPhWHbKw827TNYiwmY) · 예약 trig_01JUNyE7po2LknocSSkkFYrj (매일 23:23 KST, rep.json.enc 만 바꿈).
+- v43.5(2026-10-21) 올림(fcd6dd3): 홈 띠 2.5배(240px)·매일 다른 우리 사진(D.photos+폰 사진, 홈·떨어진 날 띠)·코스 카드 왼쪽 정렬 한 장씩. 자세히 HANDOFF v43.5.
