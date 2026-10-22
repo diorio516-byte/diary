@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>제목 — 사진 안내서 템플릿 (A4)</title>
+<!--
+  docs/이미지작업_프로세스.md ④ 조판 템플릿.
+  · 사진 자리: <!–PHOTO:slot–> 한 줄 (build_pdf.py가 job.json의 slot과 맞춰 바꿈)
+  · 사진 칸은 한 쪽에 6개까지(64×37mm 프레임 · 4mm 간격). 세로 사진 2장은 job.json에서 "pair"로.
+  · 이 파일엔 zoom 보정을 넣지 않는다(build_pdf.py가 _wk.html 사본에 넣음).
+-->
+<style>
+  @page { size: A4 portrait; margin: 0; }
+  html, body { margin: 0; padding: 0; }
+  body { font-family: "Noto Sans CJK KR", "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; color: #1a1a1a; font-size: 12pt; line-height: 1.4; word-break: keep-all; }
+  .page { width: 210mm; height: 297mm; padding: 12mm 12mm 10mm 12mm; box-sizing: border-box; page-break-after: always; position: relative; overflow: hidden; }
+  .page:last-child { page-break-after: auto; }
+
+  /* cover */
+  .cover-top { background: linear-gradient(135deg, #1F3A5F 0%, #2E5C8A 100%); color: #fff; border-radius: 10px; padding: 16px 20px 14px 20px; }
+  .cover-top h1 { margin: 0; font-size: 25pt; line-height: 1.25; }
+  .cover-top .sub { margin: 8px 0 0 0; font-size: 12.5pt; opacity: .92; }
+  .frame { display: table; width: 100%; margin-top: 10px; border-spacing: 6px 0; }
+  .frame .cell { display: table-cell; width: 33%; background: #EEF2F7; border-radius: 8px; padding: 9px 11px; vertical-align: top; }
+  .frame .cell b { color: #1F3A5F; font-size: 13.5pt; }
+  .frame .cell span { display: block; font-size: 11pt; color: #333; margin-top: 2px; }
+  h2 { font-size: 15.5pt; color: #1F3A5F; margin: 14px 0 6px 0; border-left: 4px solid #1F3A5F; padding-left: 8px; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border: 0.5pt solid #C5CCD6; padding: 7px 8px; vertical-align: top; font-size: 11.2pt; }
+  thead th { background: #1F3A5F; color: #fff; font-weight: 700; text-align: left; }
+  tbody th { background: #EEF2F7; color: #1F3A5F; text-align: left; width: 26mm; font-weight: 700; }
+  .notes { margin: 0; padding-left: 18px; font-size: 11.2pt; }
+  .notes li { margin-bottom: 3px; }
+  .tag { display: inline-block; font-size: 8pt; padding: 1px 6px; border-radius: 10px; background: #FFF4D6; color: #7a5200; margin-left: 4px; vertical-align: middle; }
+
+  /* concept pages */
+  .chead { border-radius: 10px; padding: 12px 16px; color: #fff; }
+  .c1 .chead { background: linear-gradient(135deg, #B23A48, #E0585B); }
+  .c2 .chead { background: linear-gradient(135deg, #8A5A2B, #C98A3A); }
+  .c3 .chead { background: linear-gradient(135deg, #1F6F8B, #39A2B5); }
+  .chead h1 { margin: 0; font-size: 20pt; }
+  .chead p { margin: 5px 0 0 0; font-size: 11.5pt; opacity: .95; }
+  .body { display: table; width: 100%; margin-top: 8px; border-spacing: 0; }
+  .tl { display: table-cell; vertical-align: top; width: 116mm; padding-right: 6px; }
+  .ph { display: table-cell; vertical-align: top; width: 64mm; }
+  .tl table th, .tl table td { font-size: 9.9pt; padding: 5px 6px; line-height: 1.33; }
+  .tl thead th { background: #333; }
+  .tl td.t { width: 14mm; font-weight: 700; color: #1F3A5F; white-space: nowrap; }
+  .tl td.p { width: 34mm; font-weight: 700; }
+  .tl td.m { color: #333; }
+  .tl tr.move td { background: #F7F9FC; color: #666; font-size: 9.6pt; }
+  .tl tr.cj td { background: #FFF9EA; }
+  .tl tr.end td { background: #EEF2F7; font-weight: 700; }
+  .photo { width: 100%; border-radius: 6px; margin-bottom: 4px; display: block; }
+  .pcap { font-size: 9pt; color: #444; margin: 0 0 7px 0; line-height: 1.25; }
+  .pgrid { display: table; width: 100%; border-spacing: 4px 0; }
+  .pgrid .pc { display: table-cell; width: 50%; vertical-align: top; }
+  .foot { position: absolute; left: 12mm; right: 12mm; bottom: 7mm; font-size: 9pt; color: #666; border-top: 0.5pt solid #ddd; padding-top: 4px; }
+  .tips { margin-top: 7px; background: #F7F9FC; border-radius: 8px; padding: 8px 11px; font-size: 9.8pt; }
+  .tips b { color: #1F3A5F; }
+  .cover table th, .cover table td { font-size: 9.8pt; padding: 4px 7px; }
+  .cover .notes { font-size: 9.5pt; }
+  .cover h2 { margin: 10px 0 5px 0; }
+</style>
+</head>
+<body>
+<!-- ================= 1쪽: 표지 ================= -->
+<div class="page cover">
+  <div class="cover-top">
+    <h1>○○ 데이트 · 토요일 코스 3컨셉</h1>
+    <p class="sub">11:00 ○○역 픽업 → 대전 → 청주에서 쉬고 → 22:50 오송역 (23:16 KTX)</p>
+  </div>
+  <div class="frame">
+    <div class="cell"><b>① 컨셉 이름</b><span>한 줄 설명 · 2인 예산</span></div>
+    <div class="cell"><b>② 컨셉 이름</b><span>한 줄 설명 · 2인 예산</span></div>
+    <div class="cell"><b>③ 컨셉 이름</b><span>한 줄 설명 · 2인 예산</span></div>
+  </div>
+  <h2>공통 뼈대 (세 코스 모두 동일)</h2>
+  <table>
+    <thead><tr><th>시간</th><th>내용</th><th>메모</th></tr></thead>
+    <tbody>
+      <tr><td>11:00</td><td>○○역 픽업</td><td>주차 · 만나는 출구</td></tr>
+      <tr><td>16:40 → 17:40</td><td>대전 → 청주</td><td>이동 55분</td></tr>
+      <tr><td>19:30</td><td>저녁</td><td>후보는 아래 표</td></tr>
+      <tr><td>22:15 → 22:50</td><td>오송역 도착</td><td>23:16 KTX 막차 · 당일 아침 코레일톡 재확인</td></tr>
+    </tbody>
+  </table>
+  <h2>저녁 옵션</h2>
+  <table>
+    <thead><tr><th>곳</th><th>메뉴 · 특징</th><th>영업 · 전화</th></tr></thead>
+    <tbody>
+      <tr><td>가게 이름</td><td>대표 메뉴</td><td>토 00:00~00:00 · 휴무 · 전화</td></tr>
+    </tbody>
+  </table>
+  <h2>토요일 체크</h2>
+  <ul class="notes">
+    <li>휴무 · 예약 가능 여부 · 막차 시각은 당일 아침 네이버 지도/코레일톡으로 한 번 더.</li>
+  </ul>
+  <div class="foot">기준 날짜 · 영업시간 출처 · 사진 출처</div>
+</div>
+
+<!-- ================= 2쪽: 컨셉 1 (컨셉마다 이 블록을 복사 · c1/c2/c3로 색 바꾸기) ================= -->
+<div class="page c1">
+  <div class="chead">
+    <h1>① 컨셉 이름 — 부제</h1>
+    <p>한 줄 설명. 날씨 좋은 날 1순위 같은 선택 기준.</p>
+  </div>
+  <div class="body">
+    <div class="tl">
+      <table>
+        <thead><tr><th>시간</th><th>장소</th><th>뭐 하기 · 메모</th></tr></thead>
+        <tbody>
+          <tr><td class="t">11:00</td><td class="p">○○역 픽업</td><td class="m">다음 곳까지 30분</td></tr>
+          <tr><td class="t">11:30</td><td class="p">장소 이름<br><span style="font-weight:400;color:#666">주소 · 전화</span></td><td class="m">할 것 · <b>입장료</b> · 영업시간 · 대체 장소</td></tr>
+          <tr class="move"><td class="t">13:10</td><td class="p">이동 30분</td><td class="m">A → B</td></tr>
+          <tr class="cj"><td class="t">17:40</td><td class="p">집 · 휴식</td><td class="m">청주 구간은 노란 줄</td></tr>
+          <tr class="end"><td class="t">22:15</td><td class="p">오송역으로</td><td class="m">22:50 도착 → 23:16 KTX</td></tr>
+        </tbody>
+      </table>
+      <div class="tips"><b>팁 제목</b> — 계절 · 날씨 · 대안 한 줄.</div>
+    </div>
+    <div class="ph">
+      <!--PHOTO:slot1-->
+      <!--PHOTO:slot2-->
+      <!--PHOTO:slot3-->
+      <!--PHOTO:slot4-->
+      <!--PHOTO:slot5-->
+      <!--PHOTO:slot6-->
+    </div>
+  </div>
+  <div class="foot">사진: 구글 지도 이용자 사진 (개인 참고용) · 영업시간·휴무는 당일 아침 네이버 지도로 한 번 더 확인</div>
+</div>
+
+</body>
+</html>

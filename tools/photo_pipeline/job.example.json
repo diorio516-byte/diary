@@ -1,0 +1,17 @@
+{
+  "html": "template_a4.html",
+  "out_pdf": "결과_안내서.pdf",
+  "frames": {"land": [64, 37], "port": [31, 37]},
+  "footer": {"find": "사진: 구글 지도 이용자 사진 (개인 참고용)", "replace": "사진: 구글 지도 이용자 사진 (개인 참고용)"},
+  "photos": [
+    {"slot": "slot1", "src": "raw/place1.png", "caption": "장소 1 — 한 줄 캡션"},
+    {"slot": "slot2", "pair": [
+      {"src": "raw/place2a.png", "caption": "세로 사진 A"},
+      {"src": "raw/place2b.png", "caption": "세로 사진 B"}
+    ]},
+    {"slot": "slot3", "src": "raw/place3.png", "caption": "장소 3", "vshift": 0.4},
+    {"slot": "slot4", "src": "raw/place4.png", "caption": "장소 4"},
+    {"slot": "slot5", "src": "raw/place5.png", "caption": "장소 5"},
+    {"slot": "slot6", "src": "raw/place6.png", "caption": "장소 6"}
+  ]
+}
