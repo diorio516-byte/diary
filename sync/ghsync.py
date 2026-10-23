@@ -1186,6 +1186,17 @@ def cmd_planseal(a):
 
 # ---------- v43 우리 리포트 (rep.json.enc) — 두 폰의 「오늘 놀이 요약」 rep 기록 → 밤 예약 작업(Claude)이 리포트를 씀 ----------
 REP_MAX_DELTA = 4000
+def _rep_prev(prev):
+    """지난 리포트: 제목·한 줄·질문 + v54 x(알아 가기 facts 는 이어서 쌓으려고 전부 · 에피소드는 제목·새로 안 것만 · 답 표는 뺌)"""
+    if not isinstance(prev, dict): return None
+    o = {k: prev.get(k) for k in ('d', 'title', 'one', 'ask')}
+    x = prev.get('x')
+    if isinstance(x, dict):
+        o['x'] = {k: v for k, v in x.items() if k not in ('table', 'ep')}
+        o['x']['ep'] = {w: {'id': e.get('id'), 't': e.get('t'), 'learn': e.get('learn') or []} for w, e in (x.get('ep') or {}).items() if isinstance(e, dict)}
+    return o
+
+
 def cmd_reportcontext(a):
     """두 폰 rep 기록(k 'rep': d, sig, v{delta, full}) 중 최근 것들과 지난 리포트를 모아 ctx 로. 이름·돈 없음(앱이 그렇게 만듦)."""
     import datetime as _dt
@@ -1225,12 +1236,170 @@ def cmd_reportcontext(a):
                     cur = use[box].setdefault(k, {'n': 0, 's': 0}); cur['n'] += int(x.get('n') or 0); cur['s'] += int(x.get('s') or 0)
     use['acts'] = dict(sorted(use['acts'].items(), key=lambda kv: -kv[1])[:150])
     out = {'today': today, 'yesterday': days[1], 'days': [by_day[d] for d in days if d in by_day], 'use': use,
-           'prev': {k: prev.get(k) for k in ('d', 'title', 'one', 'ask')} if isinstance(prev, dict) else None,
+           'prev': _rep_prev(prev),
            'people': {'j': '재준(청주)', 'h': '현지(광주)'}, 'badFiles': len(bad)}
     json.dump(out, open(a.out, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
     print(json.dumps({'ok': True, 'days': [d['d'] for d in out['days']], 'hasYesterday': days[1] in by_day, 'hasToday': today in by_day, 'prev': (prev or {}).get('d')}, ensure_ascii=False))
 
+REP_LENS = {'new': '🎢 같이 새로운 거 해 보기', 'val': '🧭 우리가 중요하게 여기는 것', 'map': '🗺 서로 얼마나 알까', 'near': '🤝 가까이 · 따로', 'talk': '💬 말 거는 법',
+            'life': '🧺 생활 나누기', 'love': '💌 마음 표현', 'home': '🏡 함께 꾸릴 날', 'kid': '👶 아이 이야기'}
+REP_KINDS = ('bal', 'day', 'month')
+# 화면 글엔 학자·연구 이름·어려운 말·점수 말을 쓰지 않는다(재준 10/23 「공부하는 게 아니고 노는 거잖아」) — 출처(src)에만
+REP_HARD = re.compile(r'가트맨|고트만|아론|슈워츠|에릭슨|오은영|자기\s?확장|사랑의\s?지도|사랑의\s?언어|애착\s?(이론|유형)|가설|확신\s?(높음|중간|낮음)|궁합|\d+\s*점(?![심검])|진단|생리')
+
+
+def _rx(v, n, errs, where, need=False):
+    """리포트 글 하나: 길이·금지 흔적(_plan_txt) + 어려운 말"""
+    if v is None or v == '':
+        if need: errs.append(f'{where}: 비어 있음')
+        return ''
+    if not isinstance(v, str):
+        errs.append(f'{where}: 글이 아님'); return ''
+    t = _plan_txt(v, n, errs, where)
+    m = REP_HARD.search(t)
+    if m: errs.append(f'{where}: 「{m.group(0)}」 — 화면 글엔 쉬운 말만(학자·연구 이름은 src 에만 · 점수·궁합·진단 X)')
+    return t
+
+
+def _rep_ep(e, w, errs):
+    """애인 공략하기 에피소드 한 편(그 폰 사람이 상대를 공략) — lover.html 이 받는 모양"""
+    if not isinstance(e, dict): errs.append(f'{w}: 객체가 아님'); return None
+    out = {'id': str(e.get('id') or '')[:40], 't': _rx(e.get('t'), 30, errs, w + '.t', True), 'sub': _rx(e.get('sub'), 60, errs, w + '.sub')}
+    if not re.match(r'^ep-\d{8}-[jh]$', out['id']): errs.append(f'{w}.id: ep-YYYYMMDD-j|h')
+    sc = e.get('scenes')
+    if not isinstance(sc, list) or not 3 <= len(sc) <= 6: errs.append(f'{w}.scenes: 3~6개'); return None
+    out['scenes'] = []
+    for i, s in enumerate(sc):
+        ws = f'{w}.scenes[{i}]'
+        if not isinstance(s, dict): errs.append(ws + ': 객체가 아님'); continue
+        op = s.get('opts')
+        if not isinstance(op, list) or len(op) != 3: errs.append(ws + '.opts: 보기 3개'); continue
+        b = s.get('best'); x = s.get('worst')
+        if not isinstance(b, int) or not 0 <= b <= 2: errs.append(ws + '.best: 0~2'); continue
+        one = {'cap': _rx(s.get('cap'), 40, errs, ws + '.cap'), 'line': _rx(s.get('line'), 90, errs, ws + '.line', True),
+               'opts': [_rx(o, 40, errs, f'{ws}.opts{j}', True) for j, o in enumerate(op)], 'best': b,
+               'why': _rx(s.get('why'), 120, errs, ws + '.why', True), 'ev': _rx(s.get('ev'), 80, errs, ws + '.ev')}
+        if isinstance(x, int) and 0 <= x <= 2 and x != b: one['worst'] = x
+        out['scenes'].append(one)
+    L = e.get('learn') or []
+    if not isinstance(L, list) or len(L) > 5: errs.append(w + '.learn: 5개까지 글')
+    else: out['learn'] = [_rx(t, 40, errs, f'{w}.learn{i}') for i, t in enumerate(L)]
+    out['care'] = _rx(e.get('care'), 80, errs, w + '.care')
+    return out
+
+
+def rep_x_check(x, errs):
+    """x = 새 리포트 화면(v54). 다 선택이지만 kind 는 꼭. 앱은 x 가 있으면 새 화면, 없으면 blocks 로 그린다."""
+    if not isinstance(x, dict): errs.append('x 가 객체가 아님'); return None
+    o = {'kind': x.get('kind') if x.get('kind') in REP_KINDS else ''}
+    if not o['kind']: errs.append('x.kind 는 bal|day|month')
+    th = x.get('three')
+    if th is not None:
+        if not isinstance(th, dict): errs.append('x.three 는 {g,o,b}')
+        else: o['three'] = {k: _rx(th.get(k), 160, errs, f'x.three.{k}') for k in ('g', 'o', 'b') if th.get(k)}
+    o['todo'] = _rx(x.get('todo'), 120, errs, 'x.todo')
+    c = x.get('care')
+    if isinstance(c, dict): o['care'] = {w: _rx(c.get(w), 80, errs, f'x.care.{w}') for w in ('j', 'h') if c.get(w)}
+    elif c: o['care'] = _rx(c, 80, errs, 'x.care')
+    mp = x.get('map')
+    if mp is not None:
+        rows, cols, dots = (mp or {}).get('rows'), (mp or {}).get('cols'), (mp or {}).get('dots')
+        if not (isinstance(rows, list) and 1 <= len(rows) <= 8 and isinstance(cols, list) and 1 <= len(cols) <= 6 and isinstance(dots, list) and len(dots) <= 48):
+            errs.append('x.map: rows 1~8 · cols 1~6(관점 키) · dots [[줄,칸]…]')
+        else:
+            bad = [c for c in cols if c not in REP_LENS]
+            if bad: errs.append(f'x.map.cols: 모르는 관점 {bad[:3]} — {list(REP_LENS)}')
+            dd = []
+            for p in dots:
+                if isinstance(p, list) and len(p) == 2 and all(isinstance(v, int) for v in p) and 0 <= p[0] < len(rows) and 0 <= p[1] < len(cols):
+                    if p not in dd: dd.append(p)
+                else: errs.append(f'x.map.dots: {p} 범위 밖'); break
+            o['map'] = {'rows': [_rx(r, 16, errs, f'x.map.rows{i}', True) for i, r in enumerate(rows)], 'cols': cols, 'dots': dd}
+    ls = x.get('lens')
+    if ls is not None:
+        if not isinstance(ls, list) or len(ls) > 5: errs.append('x.lens: 5개까지')
+        else:
+            o['lens'] = []
+            for i, l in enumerate(ls):
+                w = f'x.lens[{i}]'
+                if not isinstance(l, dict) or l.get('k') not in REP_LENS: errs.append(f'{w}.k: {list(REP_LENS)} 중 하나'); continue
+                o['lens'].append({'k': l['k'], 'line': _rx(l.get('line'), 80, errs, w + '.line', True), 'us': _rx(l.get('us'), 160, errs, w + '.us'),
+                                  'may': _rx(l.get('may'), 160, errs, w + '.may'), 'try': _rx(l.get('try'), 160, errs, w + '.try'), 'ev': _rx(l.get('ev'), 220, errs, w + '.ev')})
+    df = x.get('diff')
+    if df is not None:
+        if not isinstance(df, dict): errs.append('x.diff 는 {decide,talk,taste}')
+        else: o['diff'] = {k: _rx(df.get(k), 200, errs, f'x.diff.{k}') for k in ('decide', 'talk', 'taste') if df.get(k)}
+    mo = x.get('month')
+    if mo is not None:
+        if not isinstance(mo, dict): errs.append('x.month 는 {now,before,later,thx}')
+        else: o['month'] = {k: _rx(mo.get(k), n, errs, f'x.month.{k}') for k, n in (('now', 120), ('before', 120), ('later', 120), ('thx', 240)) if mo.get(k)}
+    tb = x.get('table')
+    if tb is not None:
+        if not isinstance(tb, list) or len(tb) > 80: errs.append('x.table: 80줄까지')
+        else:
+            o['table'] = []
+            for i, r in enumerate(tb):
+                if not isinstance(r, dict): errs.append(f'x.table[{i}]: 객체가 아님'); continue
+                o['table'].append({k: _plan_txt(r.get(k), n, errs, f'x.table[{i}].{k}') for k, n in (('q', 60), ('j', 30), ('h', 30), ('rj', 40), ('rh', 40)) if r.get(k)})   # 문항·답은 그대로 옮긴 것이라 쉬운 말 검사 안 함
+    sm = x.get('same')
+    if sm is not None:
+        if not (isinstance(sm, dict) and isinstance(sm.get('n'), int) and isinstance(sm.get('of'), int) and 0 <= sm['n'] <= sm['of'] <= 999): errs.append('x.same: {n,of} 정수(n ≤ of)')
+        else: o['same'] = {'n': sm['n'], 'of': sm['of']}
+    fc = x.get('facts')
+    if fc is not None:
+        if not isinstance(fc, dict): errs.append('x.facts 는 {j:[…],h:[…]}')
+        else:
+            o['facts'] = {}
+            for w in ('j', 'h'):
+                L = fc.get(w) or []
+                if not isinstance(L, list) or len(L) > 40: errs.append(f'x.facts.{w}: 40개까지'); continue
+                o['facts'][w] = []
+                for i, f in enumerate(L):
+                    if not isinstance(f, dict) or f.get('lv') not in ('sure', 'once'): errs.append(f'x.facts.{w}[{i}]: {{t,lv:sure|once,ev}}'); continue
+                    o['facts'][w].append({'t': _rx(f.get('t'), 40, errs, f'x.facts.{w}[{i}].t', True), 'lv': f['lv'], 'ev': _rx(f.get('ev'), 40, errs, f'x.facts.{w}[{i}].ev')})
+    ep = x.get('ep')
+    if ep is not None:
+        if not isinstance(ep, dict): errs.append('x.ep 는 {j:에피소드,h:에피소드}')
+        else:
+            o['ep'] = {}
+            for w in ('j', 'h'):
+                if ep.get(w) is None: continue
+                e = _rep_ep(ep[w], f'x.ep.{w}', errs)
+                if e:
+                    if not e['id'].endswith('-' + w): errs.append(f'x.ep.{w}.id 끝은 -{w}')
+                    o['ep'][w] = e
+    sr = x.get('src')
+    if sr is not None:
+        if not isinstance(sr, list) or len(sr) > 8: errs.append('x.src: 8개까지 글')
+        else: o['src'] = [_plan_txt(s, 100, errs, f'x.src{i}') for i, s in enumerate(sr) if isinstance(s, str) and s.strip()]
+    return {k: v for k, v in o.items() if v not in ('', None, {}, [])}
+
+
+def _cut(s, n):
+    s = str(s or '').strip()
+    return s if len(s) <= n else s[:n - 1] + '…'
+
+
+def rep_blocks_from_x(o):
+    """옛 앱(블록만 그림)을 위해 x 로 블록을 만든다 — 줄바꿈 대신 「 / 」"""
+    B = []
+    th = o.get('three') or {}
+    if th: B.append({'h': '한눈에 셋', 'p': _cut(' / '.join(f'{e} {n}: {th[k]}' for k, e, n in (('g', '🟢', '잘 맞는 것'), ('o', '🟠', '다른 것'), ('b', '🔵', '같이 해 볼 것')) if th.get(k)), 420)})
+    mo = o.get('month') or {}
+    if mo.get('now') or mo.get('before') or mo.get('later'):
+        B.append({'h': '이번 달 할 일 셋', 'p': _cut(' / '.join(f'{n}: {mo[k]}' for k, n in (('now', '이번 달'), ('before', '같이 살기 전'), ('later', '그다음')) if mo.get(k)), 420)})
+    if o.get('todo'): B.append({'h': '오늘 해 볼 것', 'p': _cut(o['todo'], 420)})
+    for l in (o.get('lens') or [])[:2]:
+        parts = [l.get('line')] + [f'{n} {l[k]}' for k, n in (('us', '이런 우리예요 —'), ('may', '그래서 이럴 수 있어요 —'), ('try', '이렇게 해 볼까요? —'), ('ev', '우리가 고른 것 —')) if l.get(k)]
+        B.append({'h': _cut(REP_LENS[l['k']], 24), 'p': _cut(' / '.join(p for p in parts if p), 420)})
+    df = o.get('diff') or {}
+    if df: B.append({'h': '다른 답 정리', 'p': _cut(' / '.join(f'{n}: {df[k]}' for k, n in (('decide', '같이 정할 것'), ('talk', '수다거리'), ('taste', '그냥 취향')) if df.get(k)), 420)})
+    if mo.get('thx'): B.append({'h': '고마웠던 순간', 'p': _cut(mo['thx'], 420)})
+    return B[:6]
+
+
 def rep_check(raw, today):
+    """rep.json — v1(제목·한 줄·블록·질문) + v54 새 화면 x(선택). x 만 있고 blocks 가 없으면 x 로 블록을 만든다(옛 앱도 보이게)."""
     import datetime as _dt
     errs = []
     if not isinstance(raw, dict): return ['rep 가 객체가 아님'], None
@@ -1238,15 +1407,22 @@ def rep_check(raw, today):
     t0 = _dt.date.fromisoformat(today)
     ok_days = {(t0 - _dt.timedelta(days=i)).isoformat() for i in range(0, 3)}
     if d not in ok_days: errs.append('d 는 오늘·어제·그제 중 하나(YYYY-MM-DD)')
-    out = {'v': 1, 'd': d, 'title': _plan_txt(raw.get('title'), 40, errs, 'title'), 'one': _plan_txt(raw.get('one'), 140, errs, 'one')}
+    out = {'v': 1, 'd': d, 'title': _rx(raw.get('title'), 40, errs, 'title', True), 'one': _rx(raw.get('one'), 140, errs, 'one')}
+    x = None
+    if raw.get('x') is not None:
+        x = rep_x_check(raw['x'], errs)
     bl = raw.get('blocks')
-    if not isinstance(bl, list) or not (1 <= len(bl) <= 6): errs.append('blocks 는 1~6개')
+    if bl is None and x:
+        bl = rep_blocks_from_x(x)
+    if not isinstance(bl, list) or not (1 <= len(bl) <= 6): errs.append('blocks 는 1~6개(또는 x 를 채우면 저절로)')
     else:
-        out['blocks'] = [{'h': _plan_txt(b.get('h'), 24, errs, f'blocks{i}.h'), 'p': _plan_txt(b.get('p'), 420, errs, f'blocks{i}.p')} for i, b in enumerate(bl) if isinstance(b, dict)]
-    if raw.get('ask'): out['ask'] = _plan_txt(raw['ask'], 120, errs, 'ask')
-    if raw.get('notify'): out['notify'] = _plan_txt(raw['notify'], 60, errs, 'notify')
+        out['blocks'] = [{'h': _rx(b.get('h'), 24, errs, f'blocks{i}.h'), 'p': _rx(b.get('p'), 420, errs, f'blocks{i}.p')} for i, b in enumerate(bl) if isinstance(b, dict)]
+    if raw.get('ask'): out['ask'] = _rx(raw['ask'], 120, errs, 'ask')
+    if raw.get('notify'): out['notify'] = _rx(raw['notify'], 60, errs, 'notify')
+    if x: out['x'] = x
     txt = json.dumps(out, ensure_ascii=False)
     if re.search(r'https?://|\d{2,3}-\d{3,4}-\d{4}|[0-9][0-9,]*\s*(원|만원|천원)', txt): errs.append('주소(URL)·전화·돈 숫자는 넣지 않는다')
+    if len(txt.encode('utf-8')) > 60 * 1024: errs.append(f'너무 큼 {len(txt.encode("utf-8"))//1024}KB (60KB 이하)')
     return errs, out
 
 def cmd_repseal(a):
@@ -1291,7 +1467,15 @@ def cmd_balinseal(a):
 
 # ---------- 매주 새 소재(fresh.json.enc) ----------
 FRESH_MAX = {'balance': 1500, 'quiz': 600, 'imagine': 600, 'dates': 1000, 'courses': 200, 'books': 30, 'wed': 30}   # v22: 쌓이도록 크게(재준 요청 「데이터량 늘리기」)
-FRESH_MAX_KB = 2 * 1024
+FRESH_MAX_KB = 4 * 1024   # v54 밸런스 이유·떨어진 날 풀이 붙어 2MB → 4MB
+# v54 떨어진 날 풀 자동 채우기(재준 10/24 「잔여의 60% 넘어가면 알아서 새로 찾아서 양 늘려」): fresh.apart = {풀: [{s: 항목, g: 시작 날}]} — 붙이기만(앞 것을 지우거나 바꾸지 않음)
+FRESH_AP_STR = {'tele': (2, 20), 'deep': (6, 40), 'cq': (3, 24), 'wave': (2, 14), 'relay': (1, 14), 'body': (4, 22), 'cut': (2, 14), 'draw': (1, 8), 'par': (12, 60),
+                'inv': (1, 8), 'fut': (6, 36), 'drw': (4, 28), 'emo': (1, 4), 'story': (12, 60), 'who': (8, 40), 'never': (8, 44)}
+FRESH_AP_POOLS = tuple(FRESH_AP_STR) + ('sur', 'role', 'post')
+FRESH_AP_SUR = ('q', 'mimic', 'emoji', 'draw')
+FRESH_AP_WEEK = 300        # 풀마다 한 주에 붙일 수 있는 수
+FRESH_AP_MAX = 3000        # 풀마다 fresh 로 붙인 전체
+FRESH_BAL_R = 18           # 밸런스 「고른 이유」 보기 한 개 길이
 COURSE_K = ('see', 'do', 'eat', 'cafe', 'stay', 'move')
 DATE_ENUM = {'io': ('both', 'in', 'out'), 'time': ('1h', 'day', 'half', 'trip'), 'wx': ('any', 'clear', 'cold', 'hot', 'rain'), 'when': ('any', 'day', 'night', 'weekend'),
              'tag': ('계절', '공연', '만들기', '맛집', '바다', '산책', '액티비티', '야경', '여행', '장거리', '전시', '집데이트', '축제', '카페'), 'reg': ('', '청주', '광주', '충청', '호남', '중간')}
@@ -1311,7 +1495,10 @@ def fresh_check(f, today):
             errs.append(w + ': id 겹침'); continue
         if not all(isinstance(b.get(k), str) and 1 <= len(b[k]) <= 40 for k in ('a', 'b')) or not isinstance(b.get('c'), str) or not 1 <= len(b['c']) <= 6:
             errs.append(w + ': a·b(40자)·c(6자) 확인'); continue
-        seen.add(b['id']); out['balance'].append({'id': b['id'], 'a': b['a'], 'b': b['b'], 'c': b['c'], 'wk': str(b.get('wk') or out['week']), **({'area': str(b['area'])[:20]} if isinstance(b.get('area'), str) and b.get('area') else {})})   # v43.1 영역 태그(우리 분석)
+        r = b.get('r')   # v54 고른 이유 보기 {a:[2~4],b:[2~4]} (각 18자) — 없어도 됨(앱은 「직접 쓰기」만)
+        if r is not None and not (isinstance(r, dict) and all(isinstance(r.get(k), list) and 2 <= len(r[k]) <= 4 and all(isinstance(x, str) and 1 <= len(x.strip()) <= FRESH_BAL_R for x in r[k]) for k in ('a', 'b'))):
+            errs.append(w + f': r 는 {{"a":[2~4개],"b":[2~4개]}} (각 {FRESH_BAL_R}자 이내)'); continue
+        seen.add(b['id']); out['balance'].append({'id': b['id'], 'a': b['a'], 'b': b['b'], 'c': b['c'], 'wk': str(b.get('wk') or out['week']), **({'area': str(b['area'])[:20]} if isinstance(b.get('area'), str) and b.get('area') else {}), **({'r': {k: [x.strip() for x in r[k]] for k in ('a', 'b')}} if r else {})})   # v43.1 영역 태그(우리 분석)
     # v43.3 연예인 월드컵 세트: {id wcs-…, t 40자, for j|h|both, items 8~32 {n 20자, sub 40자, img upload/thumb.wikimedia.org https, credit 90자, page}}
     out['wcsets'] = []
     for i, st in enumerate(f.get('wcsets') or []):
@@ -1415,6 +1602,38 @@ def fresh_check(f, today):
         if ver not in ('✓', '⚠', '단일'):
             errs.append(w + ': ver는 ✓/⚠/단일 중 하나'); continue
         out['wed'].append({'t': x['t'], 'd': x['d'], 'url': u, 'ver': ver, 'asof': str(x.get('asof') or '')[:10], 'wk': str(x.get('wk') or out['week'])})
+    out['apart'] = {}
+    ap = f.get('apart') or {}
+    if not isinstance(ap, dict):
+        errs.append('apart 는 {풀 이름: [{s, g}]}'); ap = {}
+    for k, L in ap.items():
+        w = f'apart.{k}'
+        if k not in FRESH_AP_POOLS:
+            errs.append(f'{w}: 모르는 풀 — {list(FRESH_AP_POOLS)}'); continue
+        if not isinstance(L, list) or len(L) > FRESH_AP_MAX:
+            errs.append(f'{w}: {FRESH_AP_MAX}개까지 목록'); continue
+        ok, last_g, bad = [], '', 0
+        for i, x in enumerate(L):
+            it = x.get('s') if isinstance(x, dict) else None
+            g = str(x.get('g') or '') if isinstance(x, dict) else ''
+            if not re.match(r'^20\d{2}-\d{2}-\d{2}$', g) or g < last_g:
+                errs.append(f'{w}[{i}]: g(시작 날 YYYY-MM-DD)가 없거나 앞 것보다 이름 — 붙이기만, 날짜 차례대로'); bad += 1; break
+            if k in FRESH_AP_STR:
+                lo, hi = FRESH_AP_STR[k]
+                good = isinstance(it, str) and lo <= len(it.strip()) <= hi
+            elif k == 'sur':
+                good = isinstance(it, list) and len(it) == 2 and it[0] in FRESH_AP_SUR and isinstance(it[1], str) and 5 <= len(it[1]) <= 30
+            elif k == 'role':
+                good = isinstance(it, list) and len(it) == 2 and all(isinstance(v, str) and 1 <= len(v) <= 10 for v in it)
+            else:   # post
+                good = isinstance(it, dict) and isinstance(it.get('p'), str) and 2 <= len(it['p']) <= 30 and it.get('t') in ('real', 'fantasy')
+            if not good:
+                errs.append(f'{w}[{i}]: 모양·길이 확인(같은 풀 기본 항목과 같은 모양)'); bad += 1
+                if bad > 5: break
+                continue
+            last_g = g
+            ok.append({'s': it.strip() if isinstance(it, str) else ({'p': it['p'].strip(), 't': it['t']} if isinstance(it, dict) else [v.strip() for v in it]), 'g': g})
+        if ok: out['apart'][k] = ok
     for k, lim in FRESH_MAX.items():
         if len(out[k]) > lim:
             out[k] = out[k][-lim:]        # 오래된 것부터 정리
@@ -1424,6 +1643,24 @@ def fresh_check(f, today):
     if re.search(r'\d[\d,]*\s*원', json.dumps({k: v for k, v in out.items() if k != 'wed'}, ensure_ascii=False)):
         errs.append('가격(원)은 넣지 않음 (결혼 소식 wed만 금액 허용)')
     return out, errs
+
+
+def cmd_apuse(a):
+    """v54 떨어진 날 풀 쓰임(앱이 매주 남기는 'apu' 기록: 풀마다 [나온 수, 오늘 풀 크기]) — 60% 넘은 풀과 붙일 수(크기의 절반 · 한 주 300 까지)를 알려 준다. 기록 내용은 수뿐."""
+    s = load_settings(a.settings)
+    key = sync_key(s, a.repo)
+    recs, bad = sync_records(key, a.sync)
+    L = sorted([r for r in recs.values() if isinstance(r, dict) and not r.get('del') and r.get('k') == 'apu' and isinstance(r.get('v'), dict)], key=lambda r: (str(r.get('d') or ''), r.get('t') or 0))
+    if not L:
+        print(json.dumps({'ok': True, 'd': None, 'note': '아직 apu 기록 없음(앱 v54 이후 매주 월요일 생김) — 붙일 것 없음', 'add': {}}, ensure_ascii=False)); return
+    r = L[-1]; pools = {}
+    for k, v in (r['v'].get('pools') or {}).items():
+        if isinstance(v, list) and len(v) == 2 and all(isinstance(x, (int, float)) for x in v) and v[1] > 0:
+            pools[k] = {'shown': int(v[0]), 'size': int(v[1]), 'pct': round(100 * v[0] / v[1])}
+    over = sorted([k for k, v in pools.items() if v['pct'] >= 60], key=lambda k: -pools[k]['pct'])
+    add = {k: min(FRESH_AP_WEEK, (pools[k]['size'] + 1) // 2) for k in over if k in FRESH_AP_POOLS}
+    other = [k for k in over if k not in FRESH_AP_POOLS]   # balance·quiz·imagine 은 기존 목록(balance·quiz·imagine)에 붙인다
+    print(json.dumps({'ok': True, 'd': r.get('d'), 'pools': pools, 'over60': over, 'add': add, 'addOther': {k: min(FRESH_AP_WEEK, (pools[k]['size'] + 1) // 2) for k in other}, 'badFiles': len(bad)}, ensure_ascii=False, indent=1))
 
 
 def cmd_freshopen(a):
@@ -1443,6 +1680,17 @@ def cmd_freshseal(a):
     today = a.today or _kst_today()
     f = json.load(open(a.fresh, encoding='utf-8'))
     out, errs = fresh_check(f, today)
+    if out is not None:   # v54 apart 는 붙이기만: 지난번 것은 그대로 앞에 · 새로 붙인 건 내일부터(g > 오늘) · 풀마다 한 주 300개까지
+        oldp = os.path.join(a.repo, 'fresh.json.enc')
+        try: old_ap = (json.loads(open_bytes(aes, open(oldp, 'rb').read())).get('apart') or {}) if os.path.exists(oldp) else {}
+        except Exception: old_ap = {}
+        for k in set(old_ap) | set(out.get('apart') or {}):
+            O, N = old_ap.get(k) or [], (out.get('apart') or {}).get(k) or []
+            if N[:len(O)] != O:
+                errs.append(f'apart.{k}: 지난번 항목 {len(O)}개를 지우거나 바꾸면 안 돼요(앞에 그대로 두고 뒤에 붙이기)'); continue
+            new = N[len(O):]
+            if any(x['g'] <= today for x in new): errs.append(f'apart.{k}: 새 항목의 g 는 내일 이후(오늘 {today})')
+            if len(new) > FRESH_AP_WEEK: errs.append(f'apart.{k}: 이번에 {len(new)}개 — 한 번에 {FRESH_AP_WEEK}개까지')
     if out is None or errs:
         print(json.dumps({'ok': False, 'errors': errs[:40]}, ensure_ascii=False, indent=1)); sys.exit(1)
     import datetime as _dt
@@ -1457,7 +1705,8 @@ def cmd_freshseal(a):
         fh.write(seal_bytes(aes, mac, raw))
     wk = out['week']
     print(json.dumps({'ok': True, 'week': wk, 'kb': len(raw) // 1024, 'thisWeek': {k: len([x for x in out[k] if isinstance(x, dict) and x.get('wk') == wk]) for k in ('balance', 'quiz', 'dates', 'courses', 'books')},
-                      'imagine': len(out['imagine']), 'total': {k: len(out[k]) for k in ('balance', 'quiz', 'imagine', 'dates', 'courses', 'wed')}}, ensure_ascii=False, indent=1))
+                      'imagine': len(out['imagine']), 'total': {k: len(out[k]) for k in ('balance', 'quiz', 'imagine', 'dates', 'courses', 'wed')},
+                      'apart': {k: len(v) for k, v in (out.get('apart') or {}).items()}}, ensure_ascii=False, indent=1))
 
 
 # ---------- 매주 쌓이는 자료(v18): 책 lib.json.enc · 해외여행 world.json.enc ----------
@@ -2177,6 +2426,7 @@ def main():
     p = sp.add_parser('balinseal'); p.add_argument('--settings', default='env'); p.add_argument('--repo', required=True); p.add_argument('--in', required=True)
     p = sp.add_parser('repseal'); p.add_argument('--settings', default='env'); p.add_argument('--repo', required=True); p.add_argument('--rep', required=True)
     p = sp.add_parser('newswants'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True)
+    p = sp.add_parser('apuse'); p.add_argument('--settings', default='env'); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True)
     p = sp.add_parser('freshopen'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     p = sp.add_parser('freshseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--fresh', required=True); p.add_argument('--today')
     for nm in ('libopen', 'worldopen', 'plcopen', 'mvwopen'):
@@ -2190,7 +2440,7 @@ def main():
     p = sp.add_parser('packsrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--src', required=True)
     p = sp.add_parser('unpacksrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     a = ap.parse_args()
-    {'plancontext': cmd_plancontext, 'planseal': cmd_planseal, 'reportcontext': cmd_reportcontext, 'repseal': cmd_repseal, 'balinseal': cmd_balinseal, 'homeseal': cmd_homeseal, 'fireseal': cmd_fireseal, 'libopen': cmd_libopen, 'libseal': cmd_libseal, 'worldopen': cmd_worldopen, 'worldseal': cmd_worldseal, 'plcopen': cmd_plcopen, 'plcseal': cmd_plcseal, 'mvwopen': cmd_mvwopen, 'mvwseal': cmd_mvwseal, 'notify': cmd_notify, 'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
+    {'plancontext': cmd_plancontext, 'planseal': cmd_planseal, 'reportcontext': cmd_reportcontext, 'repseal': cmd_repseal, 'balinseal': cmd_balinseal, 'homeseal': cmd_homeseal, 'fireseal': cmd_fireseal, 'libopen': cmd_libopen, 'libseal': cmd_libseal, 'worldopen': cmd_worldopen, 'worldseal': cmd_worldseal, 'plcopen': cmd_plcopen, 'plcseal': cmd_plcseal, 'mvwopen': cmd_mvwopen, 'mvwseal': cmd_mvwseal, 'notify': cmd_notify, 'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'apuse': cmd_apuse, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
      'keyfile': cmd_keyfile, 'push': cmd_push, 'cfg': cmd_cfg, 'syncinit': cmd_syncinit, 'syncclone': cmd_syncclone,
      'syncpull': cmd_syncpull, 'syncclean': cmd_syncclean}[a.cmd](a)
 
