@@ -1470,7 +1470,7 @@ FRESH_MAX = {'balance': 1500, 'quiz': 600, 'imagine': 600, 'dates': 1000, 'cours
 FRESH_MAX_KB = 4 * 1024   # v54 밸런스 이유·떨어진 날 풀이 붙어 2MB → 4MB
 # v54 떨어진 날 풀 자동 채우기(재준 10/24 「잔여의 60% 넘어가면 알아서 새로 찾아서 양 늘려」): fresh.apart = {풀: [{s: 항목, g: 시작 날}]} — 붙이기만(앞 것을 지우거나 바꾸지 않음)
 FRESH_AP_STR = {'tele': (2, 20), 'deep': (6, 40), 'cq': (3, 24), 'wave': (2, 14), 'relay': (1, 14), 'body': (4, 22), 'cut': (2, 14), 'draw': (1, 8), 'par': (12, 60),
-                'inv': (1, 8), 'fut': (6, 36), 'drw': (4, 28), 'emo': (1, 4), 'story': (12, 60), 'who': (8, 40), 'never': (8, 44)}
+                'inv': (1, 8), 'fut': (6, 36), 'drw': (4, 28), 'emo': (1, 4), 'story': (12, 60), 'who': (8, 40), 'never': (8, 44), 'if': (8, 90)}   # if = 상상 놀이 「만약에」 질문
 FRESH_AP_POOLS = tuple(FRESH_AP_STR) + ('sur', 'role', 'post')
 FRESH_AP_SUR = ('q', 'mimic', 'emoji', 'draw')
 FRESH_AP_WEEK = 300        # 풀마다 한 주에 붙일 수 있는 수
