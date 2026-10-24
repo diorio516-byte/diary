@@ -1293,6 +1293,13 @@ def rep_x_check(x, errs):
     if not isinstance(x, dict): errs.append('x 가 객체가 아님'); return None
     o = {'kind': x.get('kind') if x.get('kind') in REP_KINDS else ''}
     if not o['kind']: errs.append('x.kind 는 bal|day|month')
+    # 10/24 재준 「사실 나열 말고 심리 분석 — 그래서 뭐 어떻다는 건지 · 어쩌자는 건지 · 왜 그런지」: 마음 읽기 칸(문서 13절)
+    o['story'] = _rx(x.get('story'), 600, errs, 'x.story')
+    me = x.get('me')
+    if me is not None:
+        if not isinstance(me, dict): errs.append('x.me 는 {j,h}')
+        else: o['me'] = {w: _rx(me.get(w), 320, errs, f'x.me.{w}') for w in ('j', 'h') if me.get(w)}
+    o['us'] = _rx(x.get('us'), 400, errs, 'x.us')
     th = x.get('three')
     if th is not None:
         if not isinstance(th, dict): errs.append('x.three 는 {g,o,b}')
@@ -1323,8 +1330,10 @@ def rep_x_check(x, errs):
             for i, l in enumerate(ls):
                 w = f'x.lens[{i}]'
                 if not isinstance(l, dict) or l.get('k') not in REP_LENS: errs.append(f'{w}.k: {list(REP_LENS)} 중 하나'); continue
-                o['lens'].append({'k': l['k'], 'line': _rx(l.get('line'), 80, errs, w + '.line', True), 'us': _rx(l.get('us'), 160, errs, w + '.us'),
-                                  'may': _rx(l.get('may'), 160, errs, w + '.may'), 'try': _rx(l.get('try'), 160, errs, w + '.try'), 'ev': _rx(l.get('ev'), 220, errs, w + '.ev')})
+                one = {'k': l['k'], 'line': _rx(l.get('line'), 80, errs, w + '.line', True), 'us': _rx(l.get('us'), 160, errs, w + '.us'),
+                       'may': _rx(l.get('may'), 160, errs, w + '.may'), 'try': _rx(l.get('try'), 160, errs, w + '.try'), 'ev': _rx(l.get('ev'), 220, errs, w + '.ev'),
+                       'mean': _rx(l.get('mean'), 240, errs, w + '.mean'), 'why': _rx(l.get('why'), 240, errs, w + '.why'), 'do': _rx(l.get('do'), 200, errs, w + '.do')}
+                o['lens'].append({k: v for k, v in one.items() if v})
     df = x.get('diff')
     if df is not None:
         if not isinstance(df, dict): errs.append('x.diff 는 {decide,talk,taste}')
@@ -1383,6 +1392,10 @@ def _cut(s, n):
 def rep_blocks_from_x(o):
     """옛 앱(블록만 그림)을 위해 x 로 블록을 만든다 — 줄바꿈 대신 「 / 」"""
     B = []
+    if o.get('story'): B.append({'h': '오늘의 마음 읽기', 'p': _cut(o['story'], 420)})
+    me = o.get('me') or {}
+    if me: B.append({'h': '재준 마음 · 현지 마음', 'p': _cut(' / '.join(f'{n}: {me[w]}' for w, n in (('j', '재준'), ('h', '현지')) if me.get(w)), 420)})
+    if o.get('us'): B.append({'h': '둘이 만나면', 'p': _cut(o['us'], 420)})
     th = o.get('three') or {}
     if th: B.append({'h': '한눈에 셋', 'p': _cut(' / '.join(f'{e} {n}: {th[k]}' for k, e, n in (('g', '🟢', '잘 맞는 것'), ('o', '🟠', '다른 것'), ('b', '🔵', '같이 해 볼 것')) if th.get(k)), 420)})
     mo = o.get('month') or {}
@@ -1390,7 +1403,7 @@ def rep_blocks_from_x(o):
         B.append({'h': '이번 달 할 일 셋', 'p': _cut(' / '.join(f'{n}: {mo[k]}' for k, n in (('now', '이번 달'), ('before', '같이 살기 전'), ('later', '그다음')) if mo.get(k)), 420)})
     if o.get('todo'): B.append({'h': '오늘 해 볼 것', 'p': _cut(o['todo'], 420)})
     for l in (o.get('lens') or [])[:2]:
-        parts = [l.get('line')] + [f'{n} {l[k]}' for k, n in (('us', '이런 우리예요 —'), ('may', '그래서 이럴 수 있어요 —'), ('try', '이렇게 해 볼까요? —'), ('ev', '우리가 고른 것 —')) if l.get(k)]
+        parts = [l.get('line')] + [f'{n} {l[k]}' for k, n in (('mean', '그래서 뭐냐면 —'), ('why', '왜 그러냐면 —'), ('do', '그래서 이렇게 해 봐요 —'), ('us', '이런 우리예요 —'), ('may', '그래서 이럴 수 있어요 —'), ('try', '이렇게 해 볼까요? —'), ('ev', '우리가 고른 것 —')) if l.get(k)]
         B.append({'h': _cut(REP_LENS[l['k']], 24), 'p': _cut(' / '.join(p for p in parts if p), 420)})
     df = o.get('diff') or {}
     if df: B.append({'h': '다른 답 정리', 'p': _cut(' / '.join(f'{n}: {df[k]}' for k, n in (('decide', '같이 정할 것'), ('talk', '수다거리'), ('taste', '그냥 취향')) if df.get(k)), 420)})
