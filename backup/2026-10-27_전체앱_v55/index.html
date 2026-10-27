@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>우리 다이어리</title>
+<meta name="robots" content="noindex,nofollow">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#F4EEDF" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1A1612" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="우리 다이어리">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Gaegu:wght@400;700&family=Gowun+Dodum&family=Nanum+Pen+Script&display=swap" rel="stylesheet">
+<style>
+:root{--paper:#F4EEDF;--gridc:rgba(43,37,33,.07);--card:#FFFDF6;--ink:#2B2521;--muted:#665C53;--line:rgba(43,37,33,.18);--line2:rgba(43,37,33,.32);--h:#C8286F;--hdot:#D6337F;--tape:rgba(214,190,130,.78);--shadow:rgba(43,37,33,.14);--fab:#2B2521;--fabink:#F4EEDF;--field:#FFFFFF;--focus:#C8286F;
+--fj:'Nanum Pen Script','Gaegu',cursive;--fb:'Gowun Dodum','Apple SD Gothic Neo','Malgun Gothic',sans-serif}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--paper:#1A1612;--gridc:rgba(244,238,223,.05);--card:#241E19;--ink:#EFE7DA;--muted:#AC9F90;--line:rgba(244,238,223,.16);--line2:rgba(244,238,223,.3);--h:#FF93C4;--hdot:#FF6FAE;--tape:rgba(160,132,84,.6);--shadow:rgba(0,0,0,.45);--fab:#F2EBDF;--fabink:#1A1612;--field:#2E2620;--focus:#FF93C4}}
+:root[data-theme="dark"]{color-scheme:dark;--paper:#1A1612;--gridc:rgba(244,238,223,.05);--card:#241E19;--ink:#EFE7DA;--muted:#AC9F90;--line:rgba(244,238,223,.16);--line2:rgba(244,238,223,.3);--h:#FF93C4;--hdot:#FF6FAE;--tape:rgba(160,132,84,.6);--shadow:rgba(0,0,0,.45);--fab:#F2EBDF;--fabink:#1A1612;--field:#2E2620;--focus:#FF93C4}
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;min-height:100vh;min-height:100dvh;background-color:var(--paper);background-image:linear-gradient(var(--gridc) 1px,transparent 1px),linear-gradient(90deg,var(--gridc) 1px,transparent 1px);background-size:24px 24px;color:var(--ink);font-family:var(--fb);font-size:16px;line-height:1.6;word-break:keep-all;overflow-wrap:anywhere}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.sr{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.wrap{max-width:420px;margin:0 auto;padding:calc(env(safe-area-inset-top,0px) + 64px) 20px calc(env(safe-area-inset-bottom,0px) + 40px)}
+.lk{position:relative;padding:30px 22px 24px;background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:0 10px 22px var(--shadow);text-align:center}
+.lk::before{content:"";position:absolute;left:50%;top:-11px;width:88px;height:22px;margin-left:-44px;transform:rotate(-2deg);background:var(--tape)}
+.lk img{display:block;width:92px;height:92px;margin:0 auto;border-radius:22px;box-shadow:0 4px 12px var(--shadow)}
+h1{margin:16px 0 0;font-family:var(--fj);font-weight:400;font-size:44px;line-height:1}
+.sub{margin:6px 0 0;font-size:14px;color:var(--muted)}
+form{margin-top:22px;display:flex;flex-direction:column;gap:10px}
+input{width:100%;min-height:52px;padding:0 16px;border:1.5px solid var(--line2);border-radius:14px;background:var(--field);color:var(--ink);font:inherit;font-size:17px}
+button{font:inherit;cursor:pointer}
+.go{min-height:52px;border:0;border-radius:14px;background:var(--fab);color:var(--fabink);font-size:17px}
+.go:disabled{opacity:.5;cursor:progress}
+.msg{min-height:1.5em;margin:12px 0 0;font-size:14px;color:var(--h)}
+.nt{margin:6px 0 0;font-size:13px;color:var(--muted)}
+.ins{margin-top:26px;padding:18px 18px 16px;background:var(--card);border:1.5px dashed var(--line2);border-radius:12px}
+.ins h2{margin:0;font-family:var(--fj);font-weight:400;font-size:30px;line-height:1.05}
+.ins p{margin:6px 0 0;font-size:14px;color:var(--muted)}
+.ins ol{margin:10px 0 0;padding-left:22px;font-size:15px;line-height:1.75}
+.ins .inst{margin-top:12px;width:100%;min-height:48px;border:1.5px solid var(--ink);border-radius:12px;background:none;color:var(--ink);font-size:16px}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main class="wrap">
+ <section class="lk" aria-labelledby="t">
+  <img src="icons/icon-192.png" alt="" width="92" height="92">
+  <h1 id="t">우리 둘의 다이어리</h1>
+  <p class="sub">둘만 아는 비밀번호로 열어요.</p>
+  <form id="f" autocomplete="on">
+   <label for="pw" class="sr">둘만의 비밀번호</label>
+   <input id="pw" name="password" type="password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="둘만의 비밀번호" required>
+   <button id="go" class="go" type="submit">열기</button>
+  </form>
+  <p class="msg" id="msg" role="status" aria-live="polite"></p>
+  <p class="nt">처음 한 번만 넣으면 이 폰에서는 계속 열려 있어요.</p>
+ </section>
+ <section class="ins" id="ins" aria-labelledby="ins-t" hidden>
+  <h2 id="ins-t">홈 화면에 두면 앱처럼 열려요</h2>
+  <div id="ins-a" hidden>
+   <p>버튼 하나로 설치돼요.</p>
+   <button type="button" class="inst" id="inst">앱으로 설치</button>
+  </div>
+  <div id="ins-g" hidden>
+   <ol><li>크롬: 오른쪽 위 ⋮ → 앱 설치</li><li>삼성 인터넷: 아래 ≡ → 현재 페이지 추가 → 홈 화면</li></ol>
+  </div>
+  <div id="ins-i" hidden>
+   <ol><li>사파리 아래쪽 공유 버튼</li><li>홈 화면에 추가 → 추가</li><li>홈 화면의 「우리 다이어리」로 열고 비밀번호를 넣어요</li></ol>
+   <p>아이폰은 홈 화면 앱과 사파리가 따로라서, 비밀번호는 홈 화면 앱에서 넣어 주세요.</p>
+  </div>
+ </section>
+</main>
+<script>
+(function(){'use strict';
+const $=s=>document.querySelector(s);
+const te=new TextEncoder();
+const b64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+function idb(){return new Promise((res,rej)=>{const r=indexedDB.open('hj-diary',1);r.onupgradeneeded=()=>r.result.createObjectStore('k');r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});}
+async function putKey(k){const db=await idb();try{await new Promise((res,rej)=>{const tx=db.transaction('k','readwrite');tx.objectStore('k').put(k,'aes');tx.oncomplete=res;tx.onerror=()=>rej(tx.error);});}finally{db.close();}}
+async function getKey(){try{const db=await idb();try{return await new Promise(res=>{const g=db.transaction('k').objectStore('k').get('aes');g.onsuccess=()=>res(g.result||null);g.onerror=()=>res(null);});}finally{db.close();}}catch(e){return null;}}
+async function delKey(){try{const db=await idb();try{await new Promise(res=>{const tx=db.transaction('k','readwrite');tx.objectStore('k').delete('aes');tx.oncomplete=res;tx.onerror=res;});}finally{db.close();}}catch(e){}}
+function swRekey(){try{if(navigator.serviceWorker&&navigator.serviceWorker.controller)navigator.serviceWorker.controller.postMessage('rekey');}catch(e){}}
+async function derive(pw,m){const base=await crypto.subtle.importKey('raw',te.encode(pw.normalize('NFC')),'PBKDF2',false,['deriveKey']);
+ return crypto.subtle.deriveKey({name:'PBKDF2',salt:b64(m.salt),iterations:m.iter,hash:'SHA-256'},base,{name:'AES-GCM',length:256},false,['decrypt']);}
+async function ok(key,m){const c=b64(m.check);try{const pt=await crypto.subtle.decrypt({name:'AES-GCM',iv:c.slice(0,12)},key,c.slice(12));return new TextDecoder().decode(pt)==='hj-diary-ok';}catch(e){return false;}}
+const standalone=matchMedia('(display-mode: standalone)').matches||navigator.standalone===true;
+const ios=/iphone|ipad|ipod/i.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+const hasSW='serviceWorker' in navigator;
+if(hasSW)navigator.serviceWorker.register('sw.js').catch(()=>{});
+// 이미 연 적 있는 폰이면 바로 앱으로. 비밀번호가 바뀌어 열쇠가 안 맞으면 지우고 새로 받기
+(async()=>{const k=await getKey();if(!k||!hasSW)return;let m;try{m=await (await fetch('k.json',{cache:'no-cache'})).json();}catch(e){return;}
+ if(await ok(k,m)){await navigator.serviceWorker.ready;const n=+(sessionStorage.getItem('hj-rl')||0);if(n<2){sessionStorage.setItem('hj-rl',String(n+1));location.replace('./');}}
+ else{await delKey();swRekey();$('#msg').textContent='비밀번호가 바뀌었어요. 새 비밀번호를 넣어 주세요.';}})();
+$('#f').addEventListener('submit',async e=>{e.preventDefault();const pw=$('#pw').value;if(!pw)return;const go=$('#go'),msg=$('#msg');go.disabled=true;msg.textContent='여는 중…';
+ try{if(!hasSW||!window.crypto||!crypto.subtle)throw new Error('old');
+  const m=await (await fetch('k.json',{cache:'no-cache'})).json();const key=await derive(pw,m);
+  if(!(await ok(key,m))){msg.textContent='비밀번호가 달라요. 다시 넣어 주세요.';go.disabled=false;$('#pw').select();return;}
+  await putKey(key);swRekey();msg.textContent='열렸어요.';await navigator.serviceWorker.ready;sessionStorage.removeItem('hj-rl');location.replace('./');
+ }catch(err){msg.textContent=err&&err.message==='old'?'이 브라우저에서는 열 수 없어요. 크롬이나 사파리로 열어 주세요.':'열지 못했어요. 인터넷 연결을 확인해 주세요.';go.disabled=false;}});
+let bip=null;
+function showIns(){if(standalone)return;$('#ins').hidden=false;$('#ins-i').hidden=!ios;$('#ins-a').hidden=ios||!bip;$('#ins-g').hidden=ios||!!bip;}
+window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();bip=e;showIns();});
+$('#inst').addEventListener('click',async()=>{if(!bip)return;bip.prompt();try{await bip.userChoice;}catch(e){}bip=null;showIns();});
+window.addEventListener('appinstalled',()=>{$('#ins').hidden=true;});
+showIns();
+})();
+</script>
+</body>
+</html>
