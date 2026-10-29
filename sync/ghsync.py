@@ -32,6 +32,7 @@
   worldseal --settings s.json --repo repo --in world.json [--base content/trips.json] [--sync syncdir]  검사·정리 후 암호화
   packsrc  --settings s.json --repo repo --src 폴더           앱 소스(빌드 전 파일) 묶음을 암호화해 dev/src.tgz.enc로
   unpacksrc --settings s.json --repo repo --out 폴더          dev/src.tgz.enc 풀기
+  fcv      --repo repo --sync syncdir --out fcv.json [--who j|h|both]   v62 미래 자금 「저장」 값(k 'fcv') + 계획 값 → 분석용(값은 파일에만)
 """
 import argparse, base64, glob, hashlib, hmac, json, os, re, subprocess, sys, unicodedata
 
@@ -582,7 +583,7 @@ def cmd_homeseal(a):
 
 
 def remote_url(s):
-    return f"https://github.com/{s['user']}/{s['repo']}.git"
+    return f"https://github.com/{s['user']}/{s.get('repo') or REPO}.git"   # v62 --settings env 엔 repo 가 없음
 
 
 def cmd_syncinit(a):
@@ -693,6 +694,42 @@ def cmd_syncpull(a):
             recent.append({'k': r['k'], 'w': r.get('w'), 'd': r.get('d') or r.get('dd'), 's': (r.get('s') or r.get('n') or r.get('ref') or '')[:80]})
     print(json.dumps({'appPhotos': len(files), 'files': files, 'missing': missing, 'badFiles': bad, 'records': kinds,
                       'recent': recent[:40]}, ensure_ascii=False, indent=1))
+
+
+def cmd_fcv(a):
+    """v62 미래 자금 계산기 「저장」 값: 폰이 남긴 기록 k 'fcv' {d, v:{t, vals:{칸 id: 값}, n}}(하루 한 장) → 사람마다 가장 새것 + 날마다 흐름,
+    그리고 앱이 「계획 값」으로 쓰는 fire.json plan 을 같이 --out 에. 화면엔 날짜·칸 수만(값은 파일에만). 기본은 재준(j) 것만."""
+    import datetime as _dt
+    s = load_settings(a.settings)
+    aes, _ = keys_for(s, a.repo)
+    key = sync_key(s, a.repo)
+    recs, bad = sync_records(key, a.sync)
+    who = {}
+    for r in recs.values():
+        if not isinstance(r, dict) or r.get('del') or r.get('k') != 'fcv' or r.get('w') not in ('j', 'h'):
+            continue
+        if a.who != 'both' and r['w'] != a.who:
+            continue
+        v = r.get('v') if isinstance(r.get('v'), dict) else {}
+        vals = v.get('vals')
+        if not isinstance(vals, dict):
+            continue
+        who.setdefault(r['w'], []).append({'d': str(r.get('d') or ''), 't': int(v.get('t') or 0), 'n': len(vals), 'vals': vals})
+    out = {'who': {}, 'badFiles': bad}
+    for w, L in who.items():
+        L.sort(key=lambda x: x['t'])
+        out['who'][w] = {'latest': L[-1], 'history': L}
+    plan = None
+    p = os.path.join(a.repo, 'fire.json.enc')
+    if os.path.exists(p):
+        try: plan = (json.loads(open_bytes(aes, open(p, 'rb').read())) or {}).get('plan')
+        except Exception: plan = None
+    out['plan'] = plan
+    json.dump(out, open(a.out, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
+    kst = _dt.timezone(_dt.timedelta(hours=9))
+    when = lambda t: _dt.datetime.fromtimestamp(t / 1000, kst).strftime('%m/%d %H:%M') if t else ''
+    print(json.dumps({'ok': True, 'out': a.out, 'plan': bool(plan), 'badFiles': len(bad),
+                      'who': {w: {'saved': when(x['latest']['t']), 'n': x['latest']['n'], 'days': [h['d'] for h in x['history']]} for w, x in out['who'].items()}}, ensure_ascii=False))
 
 
 def now_kst_date():
@@ -2448,12 +2485,13 @@ def main():
         p = sp.add_parser(nm); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--in', required=True)
         p.add_argument('--base', help='앱 소스 content/books.json·trips.json (unpacksrc 로 푼 것) — id·이름 겹침 검사'); p.add_argument('--sync', help='syncclone 한 폴더 — 두 사람 기록이 가리키는 것은 정리하지 않음')
     p = sp.add_parser('homeseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--in', required=True)
+    p = sp.add_parser('fcv'); p.add_argument('--settings', default='env'); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True); p.add_argument('--out', required=True); p.add_argument('--who', choices=('j', 'h', 'both'), default='j')
     p = sp.add_parser('fireseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--in', required=True); p.add_argument('--plan')
     p = sp.add_parser('notify'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--to', choices=('j', 'h', 'both'), default='both'); p.add_argument('--title'); p.add_argument('--msg', required=True)
     p = sp.add_parser('packsrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--src', required=True)
     p = sp.add_parser('unpacksrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     a = ap.parse_args()
-    {'plancontext': cmd_plancontext, 'planseal': cmd_planseal, 'reportcontext': cmd_reportcontext, 'repseal': cmd_repseal, 'balinseal': cmd_balinseal, 'homeseal': cmd_homeseal, 'fireseal': cmd_fireseal, 'libopen': cmd_libopen, 'libseal': cmd_libseal, 'worldopen': cmd_worldopen, 'worldseal': cmd_worldseal, 'plcopen': cmd_plcopen, 'plcseal': cmd_plcseal, 'mvwopen': cmd_mvwopen, 'mvwseal': cmd_mvwseal, 'notify': cmd_notify, 'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'apuse': cmd_apuse, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
+    {'plancontext': cmd_plancontext, 'planseal': cmd_planseal, 'reportcontext': cmd_reportcontext, 'repseal': cmd_repseal, 'balinseal': cmd_balinseal, 'homeseal': cmd_homeseal, 'fireseal': cmd_fireseal, 'fcv': cmd_fcv, 'libopen': cmd_libopen, 'libseal': cmd_libseal, 'worldopen': cmd_worldopen, 'worldseal': cmd_worldseal, 'plcopen': cmd_plcopen, 'plcseal': cmd_plcseal, 'mvwopen': cmd_mvwopen, 'mvwseal': cmd_mvwseal, 'notify': cmd_notify, 'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'apuse': cmd_apuse, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
      'keyfile': cmd_keyfile, 'push': cmd_push, 'cfg': cmd_cfg, 'syncinit': cmd_syncinit, 'syncclone': cmd_syncclone,
      'syncpull': cmd_syncpull, 'syncclean': cmd_syncclean}[a.cmd](a)
 
