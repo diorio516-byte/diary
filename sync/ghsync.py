@@ -798,7 +798,7 @@ def cmd_unpacksrc(a):
 NEWS_CAT = ('내한', '국내', '충청', '호남', '뮤지컬', '연극', '축제', '야구', '축구')   # 뮤지컬 · 연극 v68(11/8)
 NEWS_ST = ('sold', 'on', 'soon', 'tba', 'free', 'cancel', 'done')
 NEWS_FOLLOW = ('KIA', '롯데', '가을야구', '야구대표', '축구대표', '광주FC', '부산아이파크', '해외파')
-NEWS_LIM = {'t': 60, 'lb': 8, 'v': 40, 'city': 12, 'note': 80, 'pre': 60, 'tk': 30, 'tv': 30, 'lg': 16, 'home': 20, 'away': 20, 'win': 20, 'img': 400}
+NEWS_LIM = {'t': 60, 'lb': 8, 'v': 40, 'city': 12, 'note': 80, 'pre': 60, 'tk': 30, 'tv': 30, 'lg': 16, 'home': 20, 'away': 20, 'win': 20, 'img': 400, 'ab': 40, 'yt': 200}
 
 
 def _kst_today():
@@ -942,7 +942,7 @@ def news_check(n, today):
             errs.append(w + ': tm'); continue
         if x.get('open') and not re.match(r'^20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}$', str(x['open'])):
             errs.append(w + ': open'); continue
-        for k in ('url', 'src', 'img'):
+        for k in ('url', 'src', 'img', 'yt'):
             if x.get(k) and not str(x[k]).startswith('https://'):
                 errs.append(w + f': {k}는 https'); break
         else:
