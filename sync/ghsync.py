@@ -798,7 +798,7 @@ def cmd_unpacksrc(a):
 NEWS_CAT = ('내한', '국내', '충청', '호남', '뮤지컬', '연극', '축제', '야구', '축구')   # 뮤지컬 · 연극 v68(11/8)
 NEWS_ST = ('sold', 'on', 'soon', 'tba', 'free', 'cancel', 'done')
 NEWS_FOLLOW = ('KIA', '롯데', '가을야구', '야구대표', '축구대표', '광주FC', '부산아이파크', '해외파')
-NEWS_LIM = {'t': 60, 'lb': 8, 'v': 40, 'city': 12, 'note': 80, 'pre': 60, 'tk': 30, 'tv': 30, 'lg': 16, 'home': 20, 'away': 20, 'win': 20}
+NEWS_LIM = {'t': 60, 'lb': 8, 'v': 40, 'city': 12, 'note': 80, 'pre': 60, 'tk': 30, 'tv': 30, 'lg': 16, 'home': 20, 'away': 20, 'win': 20, 'img': 400}
 
 
 def _kst_today():
@@ -942,7 +942,7 @@ def news_check(n, today):
             errs.append(w + ': tm'); continue
         if x.get('open') and not re.match(r'^20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}$', str(x['open'])):
             errs.append(w + ': open'); continue
-        for k in ('url', 'src'):
+        for k in ('url', 'src', 'img'):
             if x.get(k) and not str(x[k]).startswith('https://'):
                 errs.append(w + f': {k}는 https'); break
         else:
@@ -1042,6 +1042,108 @@ def cmd_newsseal(a):
                       'opens': [f"{x['open']} {x['t']}" for x in out['items'] if x.get('open', '')[:10] in (today, tm)],
                       'econ': econ_brief(out.get('econ'), today)},
                      ensure_ascii=False, indent=1))
+
+
+# ---------- 공연 포스터(v69 · 2026-11-09 재준 「해당 칸에 그 공연의 이미지 사진」) ----------
+GIGPH_W, GIGPH_MAXH, GIGPH_Q = 168, 252, 72          # 카드 52px · 펼침 104px 를 폰(2~3배)에서 또렷하게
+GIGPH_SPORT = ('야구', '축구')
+_NOL_RE = re.compile(r'(?:nol\.yanolja\.com/ticket/(?:places/\d+/)?products|tickets\.interpark\.com/goods)/([A-Z0-9]{6,10})(?:[/?#]|$)')
+
+
+def gig_poster_src(x):
+    """포스터 원본 주소: item.img 가 있으면 그것, 없으면 NOL·인터파크 상품 번호로 만든 공식 포스터 주소(Play/image/large)."""
+    if x.get('img'):
+        return str(x['img'])
+    m = _NOL_RE.search(str(x.get('url') or ''))
+    if m:
+        c = m.group(1)
+        return f'https://ticketimage.interpark.com/Play/image/large/{c[:2]}/{c}_p.gif'
+    return ''
+
+
+def _gig_fetch(url, tries=3):
+    import time, urllib.request
+    last = None
+    for k in range(tries):
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (diary poster thumb)', 'Accept': 'image/*'})
+            with urllib.request.urlopen(req, timeout=25) as r:
+                ct = r.headers.get('Content-Type', '')
+                b = r.read(8 * 1024 * 1024)
+            if not ct.startswith('image/'):
+                raise ValueError('그림이 아님 ' + ct[:30])
+            return b
+        except Exception as e:
+            last = e
+            time.sleep(1.5 * (k + 1))
+    raise last
+
+
+def _gig_thumb(b):
+    import io
+    try:
+        from PIL import Image
+    except Exception:
+        raise RuntimeError('Pillow 없음 → python3 -m pip install --break-system-packages --ignore-installed -q pillow')
+    im = Image.open(io.BytesIO(b))
+    im.seek(0)
+    im = im.convert('RGB')
+    w, h = im.size
+    if w < 80 or h < 80:
+        raise ValueError(f'너무 작음 {w}x{h}')
+    nh = round(h * GIGPH_W / w)
+    im = im.resize((GIGPH_W, nh), Image.LANCZOS)
+    if nh > GIGPH_MAXH:                                   # 아주 긴 그림은 위쪽(제목 쪽)만
+        im = im.crop((0, 0, GIGPH_W, GIGPH_MAXH))
+    out = io.BytesIO()
+    im.save(out, 'JPEG', quality=GIGPH_Q, optimize=True, progressive=True)
+    return 'data:image/jpeg;base64,' + base64.b64encode(out.getvalue()).decode()
+
+
+def cmd_gigimg(a):
+    """news.json.enc 의 공연(경기 빼고 · 끝난 지 45일 안)마다 포스터를 받아 168px JPEG 로 줄여 gigph.json.enc 에. 이미 받은 것(원본 주소 같음)은 건너뜀."""
+    import datetime as _dt
+    s = load_settings(a.settings)
+    aes, mac = keys_for(s, a.repo)
+    news = json.loads(open_bytes(aes, open(os.path.join(a.repo, 'news.json.enc'), 'rb').read()))
+    p = os.path.join(a.repo, 'gigph.json.enc')
+    old = {}
+    if os.path.exists(p):
+        try:
+            old = json.loads(open_bytes(aes, open(p, 'rb').read())).get('items') or {}
+        except Exception:
+            old = {}
+    today = a.today or _kst_today()
+    cut = (_dt.date.fromisoformat(today) - _dt.timedelta(days=45)).isoformat()
+    only = set(a.only.split(',')) if a.only else None
+    out, added, kept, failed, nosrc = {}, [], 0, [], []
+    for x in news.get('items', []):
+        if x.get('cat') in GIGPH_SPORT or str(x.get('e') or x.get('s') or '') < cut:
+            continue
+        src = gig_poster_src(x)
+        if not src:
+            nosrc.append(x['id']); continue
+        o = old.get(x['id'])
+        if o and o.get('from') == src and not a.force and (only is None or x['id'] not in only):
+            out[x['id']] = o; kept += 1; continue
+        if only is not None and x['id'] not in only:
+            if o:
+                out[x['id']] = o
+            continue
+        try:
+            out[x['id']] = {'from': src, 'd': _gig_thumb(_gig_fetch(src))}
+            added.append(x['id'])
+        except Exception as e:
+            failed.append({'id': x['id'], 'why': str(e)[:80]})
+            if o:
+                out[x['id']] = o
+    raw = json.dumps({'v': 1, 'updated': _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).replace(microsecond=0).isoformat(), 'items': out},
+                     ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    if len(raw) > 3 * 1024 * 1024:
+        print(json.dumps({'ok': False, 'errors': [f'너무 큼 {len(raw)//1024}KB'] }, ensure_ascii=False)); sys.exit(1)
+    changed = write_if_changed(p, seal_bytes(aes, mac, raw)) if (added or set(out) != set(old)) else False
+    print(json.dumps({'ok': True, 'posters': len(out), 'added': added, 'kept': kept, 'failed': failed, 'noSource': nosrc[:40],
+                      'kb': len(raw) // 1024, 'changed': bool(changed)}, ensure_ascii=False, indent=1))
 
 
 def econ_brief(ec, today):
@@ -2470,6 +2572,7 @@ def main():
     p = sp.add_parser('syncclean'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True); p.add_argument('--data', required=True)
     p = sp.add_parser('newsopen'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     p = sp.add_parser('newsseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--news', required=True); p.add_argument('--today')
+    p = sp.add_parser('gigimg'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--today'); p.add_argument('--only', help='id,id 만 다시'); p.add_argument('--force', action='store_true')
     p = sp.add_parser('plancontext'); p.add_argument('--settings', default='env'); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True); p.add_argument('--out', required=True)
     p = sp.add_parser('planseal'); p.add_argument('--settings', default='env'); p.add_argument('--repo', required=True); p.add_argument('--plan', required=True)
     p = sp.add_parser('reportcontext'); p.add_argument('--settings', default='env'); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True); p.add_argument('--out', required=True)
@@ -2491,7 +2594,7 @@ def main():
     p = sp.add_parser('packsrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--src', required=True)
     p = sp.add_parser('unpacksrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     a = ap.parse_args()
-    {'plancontext': cmd_plancontext, 'planseal': cmd_planseal, 'reportcontext': cmd_reportcontext, 'repseal': cmd_repseal, 'balinseal': cmd_balinseal, 'homeseal': cmd_homeseal, 'fireseal': cmd_fireseal, 'fcv': cmd_fcv, 'libopen': cmd_libopen, 'libseal': cmd_libseal, 'worldopen': cmd_worldopen, 'worldseal': cmd_worldseal, 'plcopen': cmd_plcopen, 'plcseal': cmd_plcseal, 'mvwopen': cmd_mvwopen, 'mvwseal': cmd_mvwseal, 'notify': cmd_notify, 'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'apuse': cmd_apuse, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
+    {'plancontext': cmd_plancontext, 'planseal': cmd_planseal, 'reportcontext': cmd_reportcontext, 'repseal': cmd_repseal, 'balinseal': cmd_balinseal, 'homeseal': cmd_homeseal, 'fireseal': cmd_fireseal, 'fcv': cmd_fcv, 'libopen': cmd_libopen, 'libseal': cmd_libseal, 'worldopen': cmd_worldopen, 'worldseal': cmd_worldseal, 'plcopen': cmd_plcopen, 'plcseal': cmd_plcseal, 'mvwopen': cmd_mvwopen, 'mvwseal': cmd_mvwseal, 'notify': cmd_notify, 'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'gigimg': cmd_gigimg, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'apuse': cmd_apuse, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
      'keyfile': cmd_keyfile, 'push': cmd_push, 'cfg': cmd_cfg, 'syncinit': cmd_syncinit, 'syncclone': cmd_syncclone,
      'syncpull': cmd_syncpull, 'syncclean': cmd_syncclean}[a.cmd](a)
 
