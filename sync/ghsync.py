@@ -1182,34 +1182,18 @@ PLAN_RECENT_K = ('note', 'thx', 'mood', 'food', 'place', 'dlog', 'went', 'wish',
 CITY_LL = {'청주': (36.642, 127.489), '광주': (35.160, 126.851)}
 
 
-def _plan_weather(days=4, err=None):
-    """v70.1 open-meteo 4일 날씨(청주 · 광주). 3번까지 다시 해 보고, 그래도 안 되면 curl 로 한 번 더(같은 프록시 · 인증서 묶음).
-    끝내 못 받은 도시는 None — 이유는 err[도시] 에 남겨 ctx.weatherErr · 출력 줄에서 바로 보이게(11/15 아침 편지가 날씨 없이 나간 일)."""
-    import urllib.request, time
+def _plan_weather(days=4):
+    import urllib.request
     out = {}
     for city, (la, lo) in CITY_LL.items():
         u = (f'https://api.open-meteo.com/v1/forecast?latitude={la}&longitude={lo}&timezone=Asia%2FSeoul&forecast_days={days}'
              '&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunset')
-        j, why = None, []
-        for i in range(3):
+        j = None
+        for _ in range(2):
             try:
-                j = json.loads(urllib.request.urlopen(u, timeout=20).read())
-                if (j or {}).get('daily'):
-                    break
-                why.append('daily 없음'); j = None
-            except Exception as e:
-                why.append(f'{type(e).__name__}: {str(e)[:80]}'); j = None
-            if i < 2:
-                time.sleep(3 * (i + 1))
-        if not (j or {}).get('daily'):
-            try:
-                r = subprocess.run(['curl', '-fsS', '--max-time', '25', u], capture_output=True, timeout=40)
-                if r.returncode == 0:
-                    j = json.loads(r.stdout.decode('utf-8'))
-                else:
-                    why.append(f'curl {r.returncode}: {r.stderr.decode("utf-8", "replace").strip()[:80]}')
-            except Exception as e:
-                why.append(f'curl {type(e).__name__}: {str(e)[:80]}')
+                j = json.loads(urllib.request.urlopen(u, timeout=15).read()); break
+            except Exception:
+                j = None
         try:
             dl = (j or {}).get('daily') or {}
             if not dl:
@@ -1219,8 +1203,6 @@ def _plan_weather(days=4, err=None):
                          for i, d in enumerate(dl.get('time') or [])]
         except Exception as e:
             out[city] = None
-            if err is not None:
-                err[city] = ' / '.join(why[-3:]) or f'{type(e).__name__}'
     return out
 
 
@@ -1285,22 +1267,12 @@ def cmd_plancontext(a):
                                  'open': x.get('open') or '', 'want': who})
         except Exception:
             pass
-    werr = {}
-    weather = _plan_weather(4, werr)
-    plx_age = {w: (t0 - _dt.date.fromisoformat(v['d'])).days if re.match(r'^20\d{2}-\d{2}-\d{2}$', str(v.get('d'))) else None for w, v in plx.items()}
-    # v70.1 빈칸이 왜 비었는지 편지 쓰는 쪽이 바로 알게(11/15 「앱에서 빠졌을 수 있어요 · 추측」 → 실제로는 새 판이 새벽에 올라가 아직 아무도 안 연 것)
-    why = {'plx': '앱이 하루 한 번(앱을 열 때) 남겨요. plxAge 가 1보다 크면 그 폰이 그동안 앱을 안 연 거예요(앱 고장 아님).',
-           'recent': '둘이 같이 보는 기록만 읽어요(나만 보기는 안 읽음). 비면 지난 7일 같이 남긴 기록이 없는 거예요.',
-           'meet': '앱 기록 탭 달력에서 날짜를 꾹 눌러 ♥ 데이트 하는 날을 정해야 생겨요. 비면 아직 안 정한 거예요.',
-           'weather': '; '.join(f'{c}: {e}' for c, e in werr.items()) or ''}
     ctx = {'v': 1, 'today': today, 'days': days, 'people': {'j': {'n': '재준', 'city': '청주'}, 'h': {'n': '현지', 'city': '광주'}},
-           'plx': plx, 'plxAge': plx_age, 'recent': recent, 'meet': meet, 'exams': exams, 'news': news[:24], 'weather': weather,
-           **({'weatherErr': werr} if werr else {}), 'why': why}
+           'plx': plx, 'recent': recent, 'meet': meet, 'exams': exams, 'news': news[:24], 'weather': _plan_weather(4)}
     with open(a.out, 'w', encoding='utf-8') as f:
         json.dump(ctx, f, ensure_ascii=False, indent=1)
-    print(json.dumps({'ok': True, 'out': a.out, 'plx': {w: v.get('d') for w, v in plx.items()}, 'plxAge': plx_age, 'recent': {w: len(v) for w, v in recent.items()},
-                      'meet': meet[:1], 'news': len(news), 'weather': {c: bool(v) for c, v in ctx['weather'].items()}, **({'weatherErr': werr} if werr else {}),
-                      'badFiles': len(bad)}, ensure_ascii=False))
+    print(json.dumps({'ok': True, 'out': a.out, 'plx': {w: v.get('d') for w, v in plx.items()}, 'recent': {w: len(v) for w, v in recent.items()},
+                      'meet': meet[:1], 'news': len(news), 'weather': {c: bool(v) for c, v in ctx['weather'].items()}, 'badFiles': len(bad)}, ensure_ascii=False))
 
 
 def _plan_txt(v, n, errs, where):
