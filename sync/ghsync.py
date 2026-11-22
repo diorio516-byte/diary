@@ -285,6 +285,50 @@ def read_cfg(repo, aes):
         return None
 
 
+# v72: 두 사람 이름 · 사는 도시는 잠긴 cfg.json.enc 의 people 에서 읽는다(공개 코드에는 짝 이름 · 도시를 적지 않음 · 없으면 「짝」)
+PEOPLE0 = {'j': {'n': '재준', 'city': '청주', 'll': (36.642, 127.489)}, 'h': {'n': '짝', 'city': '', 'll': None}}
+NAMES = {'j': '재준', 'h': '짝'}
+CITIES = ['청주']
+
+
+def _ll_ok(ll):
+    return isinstance(ll, (list, tuple)) and len(ll) == 2 and all(isinstance(v, (int, float)) for v in ll)
+
+
+def people_of(repo, aes):
+    p = (read_cfg(repo, aes) or {}).get('people') or {}
+    out = {}
+    for w, d in PEOPLE0.items():
+        x = p.get(w) if isinstance(p.get(w), dict) else {}
+        ll = x.get('ll')
+        out[w] = {'n': str(x.get('n') or d['n'])[:12], 'city': str(x.get('city') or d['city'])[:12], 'll': tuple(ll) if _ll_ok(ll) else d['ll']}
+    NAMES.update({w: v['n'] for w, v in out.items()})
+    CITIES[:] = list(dict.fromkeys(v['city'] for v in out.values() if v['city']))
+    return out
+
+
+def cmd_people(a):
+    """v72: 두 사람 이름 · 사는 도시 · 좌표를 잠긴 cfg.json.enc 에 넣는다. --json 파일 = {"h": {"n": 이름, "city": 도시, "ll": [위도, 경도]}}"""
+    s = load_settings(a.settings)
+    aes, mac = keys_for(s, a.repo)
+    cfg = read_cfg(a.repo, aes)
+    if cfg is None:
+        die('cfg.json.enc 없음(cfg 먼저)')
+    new = json.load(open(a.json, encoding='utf-8'))
+    ppl = dict(cfg.get('people') or {})
+    for w in ('j', 'h'):
+        x = new.get(w)
+        if not isinstance(x, dict):
+            continue
+        if x.get('ll') is not None and not _ll_ok(x['ll']):
+            die(f'{w}.ll 은 [위도, 경도]')
+        ppl[w] = {'n': str(x.get('n') or '')[:12], 'city': str(x.get('city') or '')[:12], 'll': x.get('ll')}
+    cfg['people'] = ppl
+    raw = json.dumps(cfg, ensure_ascii=False, sort_keys=True).encode('utf-8')
+    changed = write_if_changed(cfg_path(a.repo), seal_bytes(aes, mac, raw))
+    print(json.dumps({'people': sorted(ppl), 'changed': bool(changed)}, ensure_ascii=False))
+
+
 def cmd_cfg(a):
     s = load_settings(a.settings)
     aes, mac = keys_for(s, a.repo)
@@ -295,6 +339,8 @@ def cmd_cfg(a):
                             'tokenExp': s.get('token_exp') or osync.get('tokenExp') or ''}}
     if old.get('ntfy'):  # 알림 주제(ntfy)는 그대로 둔다
         cfg['ntfy'] = old['ntfy']
+    if old.get('people'):  # v72 두 사람 이름 · 도시도 그대로
+        cfg['people'] = old['people']
     raw = json.dumps(cfg, ensure_ascii=False, sort_keys=True).encode('utf-8')
     changed = write_if_changed(cfg_path(a.repo), seal_bytes(aes, mac, raw))
     print(json.dumps({'cfg': ('new' if not old else 'updated') if changed else 'same', 'tokenExp': cfg['sync']['tokenExp'],
@@ -1157,6 +1203,7 @@ def econ_brief(ec, today):
 
 def cmd_newswants(a):
     s = load_settings(a.settings)
+    people_of(a.repo, keys_for(s, a.repo)[0])
     key = sync_key(s, a.repo)
     recs, _ = sync_records(key, a.sync)
     last = {}
@@ -1170,7 +1217,7 @@ def cmd_newswants(a):
     for (ref, w), r in last.items():
         if r.get('v'):
             o = out.setdefault(ref, {'ref': ref, 't': r.get('tt'), 's': r.get('s'), 'who': []})
-            o['who'].append({'j': '재준', 'h': '현지'}.get(w, w))
+            o['who'].append(NAMES.get(w, w))
     print(json.dumps({'wants': sorted(out.values(), key=lambda x: x.get('s') or '')}, ensure_ascii=False, indent=1))
 
 
@@ -1179,13 +1226,14 @@ def cmd_newswants(a):
 # 앱(09zp)은 plan.json.enc 를 받아 맨 위에 편지 한 줄 + 고른 후보 가산점 + 아이디어를 후보로 넣는다. 나만 보기(p)·me-* 기록은 읽지 않는다.
 PLAN_BAD = re.compile(r'(\d[\d,]*\s*원|https?://|010-\d|☎|@[a-z0-9.-]+\.[a-z]{2,})', re.I)
 PLAN_RECENT_K = ('note', 'thx', 'mood', 'food', 'place', 'dlog', 'went', 'wish', 'miss', 'bal', 'pl', 'apx', 'wc', 'amen', 'fq', 'gthx', 'photo', 'prv', 'ans')
-CITY_LL = {'청주': (36.642, 127.489), '광주': (35.160, 126.851)}
-
-
-def _plan_weather(days=4):
+def _plan_weather(P, days=4):
     import urllib.request
     out = {}
-    for city, (la, lo) in CITY_LL.items():
+    for w in ('j', 'h'):
+        city, ll = P[w]['city'], P[w]['ll']
+        if not city or not ll or city in out:
+            continue
+        la, lo = ll
         u = (f'https://api.open-meteo.com/v1/forecast?latitude={la}&longitude={lo}&timezone=Asia%2FSeoul&forecast_days={days}'
              '&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunset')
         j = None
@@ -1267,8 +1315,9 @@ def cmd_plancontext(a):
                                  'open': x.get('open') or '', 'want': who})
         except Exception:
             pass
-    ctx = {'v': 1, 'today': today, 'days': days, 'people': {'j': {'n': '재준', 'city': '청주'}, 'h': {'n': '현지', 'city': '광주'}},
-           'plx': plx, 'recent': recent, 'meet': meet, 'exams': exams, 'news': news[:24], 'weather': _plan_weather(4)}
+    P = people_of(a.repo, aes)
+    ctx = {'v': 1, 'today': today, 'days': days, 'people': {w: {'n': v['n'], 'city': v['city']} for w, v in P.items()},
+           'plx': plx, 'recent': recent, 'meet': meet, 'exams': exams, 'news': news[:24], 'weather': _plan_weather(P, 4)}
     with open(a.out, 'w', encoding='utf-8') as f:
         json.dump(ctx, f, ensure_ascii=False, indent=1)
     print(json.dumps({'ok': True, 'out': a.out, 'plx': {w: v.get('d') for w, v in plx.items()}, 'recent': {w: len(v) for w, v in recent.items()},
@@ -1376,7 +1425,7 @@ def cmd_reportcontext(a):
     use['acts'] = dict(sorted(use['acts'].items(), key=lambda kv: -kv[1])[:150])
     out = {'today': today, 'yesterday': days[1], 'days': [by_day[d] for d in days if d in by_day], 'use': use,
            'prev': _rep_prev(prev),
-           'people': {'j': '재준(청주)', 'h': '현지(광주)'}, 'badFiles': len(bad)}
+           'people': {w: (f"{v['n']}({v['city']})" if v['city'] else v['n']) for w, v in people_of(a.repo, aes).items()}, 'badFiles': len(bad)}
     json.dump(out, open(a.out, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
     print(json.dumps({'ok': True, 'days': [d['d'] for d in out['days']], 'hasYesterday': days[1] in by_day, 'hasToday': today in by_day, 'prev': (prev or {}).get('d')}, ensure_ascii=False))
 
@@ -1533,7 +1582,7 @@ def rep_blocks_from_x(o):
     B = []
     if o.get('story'): B.append({'h': '오늘의 마음 읽기', 'p': _cut(o['story'], 420)})
     me = o.get('me') or {}
-    if me: B.append({'h': '재준 마음 · 현지 마음', 'p': _cut(' / '.join(f'{n}: {me[w]}' for w, n in (('j', '재준'), ('h', '현지')) if me.get(w)), 420)})
+    if me: B.append({'h': f"{NAMES['j']} 마음 · {NAMES['h']} 마음", 'p': _cut(' / '.join(f'{NAMES[w]}: {me[w]}' for w in ('j', 'h') if me.get(w)), 420)})
     if o.get('us'): B.append({'h': '둘이 만나면', 'p': _cut(o['us'], 420)})
     th = o.get('three') or {}
     if th: B.append({'h': '한눈에 셋', 'p': _cut(' / '.join(f'{e} {n}: {th[k]}' for k, e, n in (('g', '🟢', '잘 맞는 것'), ('o', '🟠', '다른 것'), ('b', '🔵', '같이 해 볼 것')) if th.get(k)), 420)})
@@ -1581,6 +1630,7 @@ def cmd_repseal(a):
     import datetime as _dt
     s = load_settings(a.settings)
     aes, mac = keys_for(s, a.repo)
+    people_of(a.repo, aes)
     raw = json.load(open(a.rep, encoding='utf-8'))
     errs, out = rep_check(raw, _kst_today())
     if errs:
@@ -2316,8 +2366,8 @@ def plc_check(f, base=None, keep=frozenset(), max_kb=PLC_MAX_KB):
             errs.append(w + ': wk 가 id·weeks 와 안 맞음'); continue
         if x['id'] in ids or x['id'] in base_ids:
             errs.append(w + f': id 겹침 {x["id"]}'); continue
-        if x.get('city') not in ('청주', '광주') or x.get('kind') not in ('food', 'stay') or x.get('cat') not in (PLC_FCATS if x.get('kind') == 'food' else PLC_SCATS):
-            errs.append(w + ': city(청주·광주)·kind(food·stay)·cat 확인'); continue
+        if x.get('city') not in CITIES or x.get('kind') not in ('food', 'stay') or x.get('cat') not in (PLC_FCATS if x.get('kind') == 'food' else PLC_SCATS):
+            errs.append(w + f": city({'·'.join(CITIES)})·kind(food·stay)·cat 확인"); continue
         if not _txt(x.get('n'), 1, 40) or not _txt(x.get('addr'), 4, 80) or not isinstance(x.get('km'), (int, float)) or not 0 <= x['km'] <= 20.5:
             errs.append(w + ': n(40자)·addr(80자)·km(0~20) 확인'); continue
         src = _src_list(x.get('src') or [], w, errs, 2, 6)
@@ -2512,6 +2562,7 @@ def weekly_seal(kind, a):
     W = WEEKLY[kind]
     s = load_settings(a.settings)
     aes, mac = keys_for(s, a.repo)
+    people_of(a.repo, aes)
     try:
         f = json.load(open(getattr(a, 'in'), encoding='utf-8'))
     except Exception as e:
@@ -2566,6 +2617,7 @@ def main():
     p = sp.add_parser('keyfile'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True)
     p = sp.add_parser('push'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--msg', required=True)
     p = sp.add_parser('cfg'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True)
+    p = sp.add_parser('people'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--json', required=True)
     p = sp.add_parser('syncinit'); p.add_argument('--settings', required=True)
     p = sp.add_parser('syncclone'); p.add_argument('--settings', required=True); p.add_argument('--dir', required=True)
     p = sp.add_parser('syncpull'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True); p.add_argument('--data'); p.add_argument('--out', required=True)
@@ -2595,7 +2647,7 @@ def main():
     p = sp.add_parser('unpacksrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     a = ap.parse_args()
     {'plancontext': cmd_plancontext, 'planseal': cmd_planseal, 'reportcontext': cmd_reportcontext, 'repseal': cmd_repseal, 'balinseal': cmd_balinseal, 'homeseal': cmd_homeseal, 'fireseal': cmd_fireseal, 'fcv': cmd_fcv, 'libopen': cmd_libopen, 'libseal': cmd_libseal, 'worldopen': cmd_worldopen, 'worldseal': cmd_worldseal, 'plcopen': cmd_plcopen, 'plcseal': cmd_plcseal, 'mvwopen': cmd_mvwopen, 'mvwseal': cmd_mvwseal, 'notify': cmd_notify, 'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'gigimg': cmd_gigimg, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'apuse': cmd_apuse, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
-     'keyfile': cmd_keyfile, 'push': cmd_push, 'cfg': cmd_cfg, 'syncinit': cmd_syncinit, 'syncclone': cmd_syncclone,
+     'keyfile': cmd_keyfile, 'push': cmd_push, 'cfg': cmd_cfg, 'people': cmd_people, 'syncinit': cmd_syncinit, 'syncclone': cmd_syncclone,
      'syncpull': cmd_syncpull, 'syncclean': cmd_syncclean}[a.cmd](a)
 
 
