@@ -13,8 +13,8 @@
   keyfile  --settings s.json --repo repo          k.json 만들기(처음 한 번; 있으면 그대로)
   push     --settings s.json --repo repo --msg 메시지     커밋하고 올리기
   cfg      --settings s.json --repo repo          바로 공유 설정(cfg.json.enc: 토큰·공유 키) 만들기/갱신
-  syncinit --settings s.json                      원격에 'sync' 가지가 없으면 만들기
-  syncclone --settings s.json --dir syncdir       'sync' 가지 받기(얕게)
+  syncinit --settings s.json                      원격에 바로 공유 가지(SYNC_BRANCH)가 없으면 만들기
+  syncclone --settings s.json --dir syncdir       바로 공유 가지 받기(얕게)
   syncpull --settings s.json --repo repo --sync syncdir --data data.json --out appdl   앱에서 올린 사진 → ingest용 파일
   syncclean --settings s.json --repo repo --sync syncdir --data data.json           합쳐진 사진 파일을 sync 가지에서 지우기
   newsopen --settings s.json --repo repo --out news.json   아침 소식(news.json.enc) 풀기, 없으면 빈 틀
@@ -38,6 +38,7 @@ import argparse, base64, glob, hashlib, hmac, json, os, re, subprocess, sys, uni
 
 ITER = 600000
 REPO = 'diary'
+SYNC_BRANCH = 'share'   # v72 바로 공유 가지(예전 'sync' 가지는 지움 · 예전 폰이 남은 열쇠로 올려도 새 가지와 섞이지 않게)
 DEFAULT_USER = 'diorio516-byte'
 
 
@@ -340,7 +341,7 @@ def cmd_cfg(a):
     tok = s.get('app_token') if 'app_token' in s else s['token']
     if not tok or len(tok) < 20:
         die('앱 공유 토큰 없음(환경 변수 DIARY_GH_TOKEN)')
-    cfg = {'v': 1, 'sync': {'owner': s['user'], 'repo': s['repo'], 'branch': 'sync', 'token': tok, 'syncKey': key,
+    cfg = {'v': 1, 'sync': {'owner': s['user'], 'repo': s['repo'], 'branch': SYNC_BRANCH, 'token': tok, 'syncKey': key,
                             'tokenExp': s.get('token_exp') or osync.get('tokenExp') or ''}}
     if old.get('ntfy'):  # 알림 주제(ntfy)는 그대로 둔다
         cfg['ntfy'] = old['ntfy']
@@ -717,8 +718,8 @@ def cmd_syncinit(a):
     d = tempfile.mkdtemp(prefix='hjsync-')
     git(d, 'init', '-q', '-b', 'sync')
     git(d, 'remote', 'add', 'origin', remote_url(s))
-    out = git(d, 'ls-remote', '--heads', 'origin', 'sync', s=s)
-    if 'refs/heads/sync' in out:
+    out = git(d, 'ls-remote', '--heads', 'origin', SYNC_BRANCH, s=s)
+    if 'refs/heads/' + SYNC_BRANCH in out:
         print(json.dumps({'sync': 'exists'})); return
     with open(os.path.join(d, 'README.md'), 'w', encoding='utf-8') as f:
         f.write('# 바로 공유\n\n두 폰이 암호를 걸어 올리는 기록이에요. 사람이 고치지 않아요.\n')
@@ -726,7 +727,7 @@ def cmd_syncinit(a):
     git(d, 'config', 'user.email', 'noreply@anthropic.com')
     git(d, 'add', '-A')
     git(d, 'commit', '-q', '-m', '바로 공유 시작')
-    git(d, 'push', 'origin', 'HEAD:sync', s=s)
+    git(d, 'push', 'origin', 'HEAD:' + SYNC_BRANCH, s=s)
     print(json.dumps({'sync': 'created'}))
 
 
@@ -737,7 +738,7 @@ def cmd_syncclone(a):
     os.makedirs(a.dir)
     git(a.dir, 'init', '-q', '-b', 'sync')
     git(a.dir, 'remote', 'add', 'origin', remote_url(s))
-    git(a.dir, 'fetch', '-q', '--depth', '1', 'origin', 'sync', s=s)
+    git(a.dir, 'fetch', '-q', '--depth', '1', 'origin', SYNC_BRANCH, s=s)
     git(a.dir, 'checkout', '-q', '-B', 'sync', 'FETCH_HEAD')
     git(a.dir, 'config', 'user.name', '우리 다이어리 밤 기록')
     git(a.dir, 'config', 'user.email', 'noreply@anthropic.com')
@@ -879,13 +880,13 @@ def cmd_syncclean(a):
         print(json.dumps({'cleaned': 0})); return
     git(a.sync, 'commit', '-q', '-m', f'합친 사진 {len(gone)}장 정리')
     for i in range(3):
-        r = subprocess.run(['git', 'push', 'origin', 'HEAD:sync'], cwd=a.sync, capture_output=True, text=True,
+        r = subprocess.run(['git', 'push', 'origin', 'HEAD:' + SYNC_BRANCH], cwd=a.sync, capture_output=True, text=True,
                            env=dict(os.environ, GIT_TERMINAL_PROMPT='0', GIT_CONFIG_COUNT='1',
                                     GIT_CONFIG_KEY_0='http.https://github.com/.extraHeader',
                                     GIT_CONFIG_VALUE_0='Authorization: Basic ' + base64.b64encode(('x-access-token:' + s['token']).encode()).decode()))
         if r.returncode == 0:
             print(json.dumps({'cleaned': len(gone)})); return
-        git(a.sync, 'pull', '-q', '--rebase', 'origin', 'sync', s=s)
+        git(a.sync, 'pull', '-q', '--rebase', 'origin', SYNC_BRANCH, s=s)
     die('sync 가지에 올리지 못함(나중에 다시)')
 
 
