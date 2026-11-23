@@ -51,7 +51,9 @@ def load_settings(p):
         pw = os.environ.get('DIARY_PW', '')
         if not pw:
             die('환경 변수 DIARY_PW 없음')
-        return {'user': 'diorio516-byte', 'token': os.environ.get('GH_TOKEN', '-'), 'pw': pw}
+        # v72: 앱 바로 공유 토큰은 git 토큰(GH_TOKEN)과 따로 — 환경 변수 DIARY_GH_TOKEN(+ 끝나는 날 DIARY_GH_TOKEN_EXP)에서만
+        return {'user': 'diorio516-byte', 'token': os.environ.get('GH_TOKEN', '-'), 'pw': pw, 'repo': REPO,
+                'app_token': os.environ.get('DIARY_GH_TOKEN', ''), 'token_exp': os.environ.get('DIARY_GH_TOKEN_EXP', '')}
     with open(p, encoding='utf-8') as f:
         s = json.load(f)
     for k in ('user', 'token', 'pw'):
@@ -335,10 +337,15 @@ def cmd_cfg(a):
     old = read_cfg(a.repo, aes) or {}
     osync = old.get('sync') or {}
     key = osync.get('syncKey') or base64.b64encode(os.urandom(32)).decode()
-    cfg = {'v': 1, 'sync': {'owner': s['user'], 'repo': s['repo'], 'branch': 'sync', 'token': s['token'], 'syncKey': key,
+    tok = s.get('app_token') if 'app_token' in s else s['token']
+    if not tok or len(tok) < 20:
+        die('앱 공유 토큰 없음(환경 변수 DIARY_GH_TOKEN)')
+    cfg = {'v': 1, 'sync': {'owner': s['user'], 'repo': s['repo'], 'branch': 'sync', 'token': tok, 'syncKey': key,
                             'tokenExp': s.get('token_exp') or osync.get('tokenExp') or ''}}
     if old.get('ntfy'):  # 알림 주제(ntfy)는 그대로 둔다
         cfg['ntfy'] = old['ntfy']
+    else:  # v72 새로 시작: 알림 주제도 새로(아무도 모르는 이름) — 두 폰 ntfy 앱에서 새 주제를 한 번 구독
+        cfg['ntfy'] = {'server': 'https://ntfy.sh', 'j': 'hj-' + os.urandom(12).hex(), 'h': 'hj-' + os.urandom(12).hex()}
     if old.get('people'):  # v72 두 사람 이름 · 도시도 그대로
         cfg['people'] = old['people']
     raw = json.dumps(cfg, ensure_ascii=False, sort_keys=True).encode('utf-8')
@@ -468,6 +475,78 @@ def fire_plan_read(path):
     return {'values': vals, 'updated': up}
 
 
+# ---- v72 근무표 shift.json.enc — 근무표 사진에서 한 사람 줄만 옮긴 것(다른 사람 이름 · 근무 없음). 앱 09zs 가 읽고, 앱에서 고친 날(기록 shift)이 앞섬 ----
+SHIFT_KEEP_WEEKS = 16
+
+
+def shift_check(f):
+    import datetime as _dt
+    errs = []
+    if not isinstance(f, dict) or f.get('v') != 1 or f.get('who') not in ('j', 'h') or not isinstance(f.get('weeks'), list):
+        return ['맨 위 형식이 {"v":1,"who":"h","weeks":[{"wk":"월요일","days":[...]}]} 가 아님'], None
+    tm = re.compile(r'^([01]\d|2[0-4]):[0-5]\d$')
+    weeks = []
+    for i, w in enumerate(f['weeks']):
+        wk = str((w or {}).get('wk') or '')
+        try:
+            if _dt.date.fromisoformat(wk).weekday() != 0:
+                errs.append(f'weeks[{i}].wk 는 월요일'); continue
+        except Exception:
+            errs.append(f'weeks[{i}].wk 날짜 형식'); continue
+        days = []
+        for j, x in enumerate(w.get('days') or []):
+            at = f'weeks[{i}].days[{j}]'
+            try:
+                d = _dt.date.fromisoformat(str(x.get('d')))
+            except Exception:
+                errs.append(at + '.d 날짜 형식'); continue
+            if not 0 <= (d - _dt.date.fromisoformat(wk)).days <= 6:
+                errs.append(at + '.d 가 그 주 밖'); continue
+            if x.get('off'):
+                days.append({'d': d.isoformat(), 'off': True}); continue
+            if not (tm.match(str(x.get('in') or '')) and tm.match(str(x.get('out') or ''))):
+                errs.append(at + ' in/out 은 HH:MM'); continue
+            o = {'d': d.isoformat(), 'in': x['in'], 'out': x['out']}
+            for k, hi in (('h', 24), ('ot', 12)):
+                v = x.get(k)
+                if v is not None:
+                    if not isinstance(v, (int, float)) or not 0 <= v <= hi:
+                        errs.append(f'{at}.{k} 는 0~{hi}'); continue
+                    o[k] = v
+            if x.get('code'):
+                o['code'] = str(x['code'])[:8]
+            days.append(o)
+        weeks.append({'wk': wk, 'days': days})
+    return errs, {'v': 1, 'who': f['who'], 'weeks': weeks}
+
+
+def cmd_shiftseal(a):
+    """근무표 --in(JSON) 을 검사해 shift.json.enc 에 합친다(같은 주는 새것으로 · 최근 16주만). 못 읽으면 지난 것 그대로."""
+    s = load_settings(a.settings)
+    aes, mac = keys_for(s, a.repo)
+    try:
+        f = json.load(open(getattr(a, 'in'), encoding='utf-8'))
+    except Exception as e:
+        print(json.dumps({'ok': False, 'errors': [f'읽기 실패 {type(e).__name__}']}, ensure_ascii=False)); sys.exit(1)
+    errs, new = shift_check(f)
+    if errs:
+        print(json.dumps({'ok': False, 'errors': errs[:20]}, ensure_ascii=False)); sys.exit(1)
+    p = os.path.join(a.repo, 'shift.json.enc')
+    old = None
+    if os.path.exists(p):
+        try:
+            old = json.loads(open_bytes(aes, open(p, 'rb').read()))
+        except Exception:
+            old = None
+    byw = {w['wk']: w for w in ((old or {}).get('weeks') or [])}
+    for w in new['weeks']:
+        byw[w['wk']] = w
+    weeks = [byw[k] for k in sorted(byw)][-SHIFT_KEEP_WEEKS:]
+    out = {'v': 1, 'who': new['who'], 'updated': _kst_today(), 'weeks': weeks}
+    changed = write_if_changed(p, seal_bytes(aes, mac, json.dumps(out, ensure_ascii=False, sort_keys=True).encode('utf-8')))
+    print(json.dumps({'ok': True, 'weeks': [w['wk'] for w in weeks], 'days': sum(len(w['days']) for w in weeks), 'changed': bool(changed)}, ensure_ascii=False))
+
+
 def cmd_fireseal(a):
     """밤 기록이 ArtifactData get card/current 결과를 --in 으로 준다. 못 읽었으면(파일 없음·형식 오류) 지난 fire.json 을 그대로 둔다."""
     s = load_settings(a.settings)
@@ -546,7 +625,7 @@ def home_build(d, final=None, reserve=None):
         a = r.get('act') or {}; rep = r.get('rep') or {}
         cma = r.get('cmA') or []
         o = {'id': r['id'], 'n': r['name'], 'z': r['zone'], 'rg': r['region'], 'dong': r.get('dong') or '',
-             'addr': (r.get('addr') or '').replace('전남광주통합특별시', '광주'), 'lat': r.get('lat'), 'lng': r.get('lng'),
+             'addr': (r.get('addr') or ''), 'lat': r.get('lat'), 'lng': r.get('lng'),
              'mv': r.get('movein') or '', 'hh': r.get('hh'), 'fl': r.get('fl'), 'brand': r.get('brand') or '',
              'bld': (r.get('builder') or '').split(',')[0].replace('(주)', '').replace('주식회사', '').strip(),
              'tier': r.get('tier'), 'park': r.get('park'), 'heat': r.get('heat') or '', 'jeonse': r.get('jeonse'),
@@ -841,9 +920,9 @@ def cmd_unpacksrc(a):
 
 
 # ---------- 아침 소식(공연·경기) ----------
-NEWS_CAT = ('내한', '국내', '충청', '호남', '뮤지컬', '연극', '축제', '야구', '축구')   # 뮤지컬 · 연극 v68(11/8)
+NEWS_CAT = ('내한', '국내', '서울', '경기', '인천', '충청', '강원', '호남', '영남', '제주', '뮤지컬', '연극', '축제', '야구', '축구')   # 뮤지컬 · 연극 v68(11/8) · v72 권역 전부(어느 권역이 「가까운 곳」인지는 잠긴 cfg people 의 도시로)
 NEWS_ST = ('sold', 'on', 'soon', 'tba', 'free', 'cancel', 'done')
-NEWS_FOLLOW = ('KIA', '롯데', '가을야구', '야구대표', '축구대표', '광주FC', '부산아이파크', '해외파')
+NEWS_FOLLOW = ('롯데', '가을야구', '야구대표', '축구대표', '부산아이파크', '해외파')
 NEWS_LIM = {'t': 60, 'lb': 8, 'v': 40, 'city': 12, 'note': 80, 'pre': 60, 'tk': 30, 'tv': 30, 'lg': 16, 'home': 20, 'away': 20, 'win': 20, 'img': 400, 'ab': 40, 'yt': 200}
 
 
@@ -1226,8 +1305,10 @@ def cmd_newswants(a):
 # 앱(09zp)은 plan.json.enc 를 받아 맨 위에 편지 한 줄 + 고른 후보 가산점 + 아이디어를 후보로 넣는다. 나만 보기(p)·me-* 기록은 읽지 않는다.
 PLAN_BAD = re.compile(r'(\d[\d,]*\s*원|https?://|010-\d|☎|@[a-z0-9.-]+\.[a-z]{2,})', re.I)
 PLAN_RECENT_K = ('note', 'thx', 'mood', 'food', 'place', 'dlog', 'went', 'wish', 'miss', 'bal', 'pl', 'apx', 'wc', 'amen', 'fq', 'gthx', 'photo', 'prv', 'ans')
-def _plan_weather(P, days=4):
-    import urllib.request
+def _plan_weather(P, days=4, err=None):
+    """v70.1 · v72 open-meteo 4일 날씨(두 사람 도시 · 좌표는 잠긴 cfg people). 3번까지 다시 해 보고, 그래도 안 되면 curl 로 한 번 더.
+    끝내 못 받은 도시는 None — 이유는 err[도시] 에 남겨 ctx.weatherErr · 출력 줄에서 바로 보이게."""
+    import urllib.request, time
     out = {}
     for w in ('j', 'h'):
         city, ll = P[w]['city'], P[w]['ll']
@@ -1236,12 +1317,26 @@ def _plan_weather(P, days=4):
         la, lo = ll
         u = (f'https://api.open-meteo.com/v1/forecast?latitude={la}&longitude={lo}&timezone=Asia%2FSeoul&forecast_days={days}'
              '&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunset')
-        j = None
-        for _ in range(2):
+        j, why = None, []
+        for i in range(3):
             try:
-                j = json.loads(urllib.request.urlopen(u, timeout=15).read()); break
-            except Exception:
-                j = None
+                j = json.loads(urllib.request.urlopen(u, timeout=20).read())
+                if (j or {}).get('daily'):
+                    break
+                why.append('daily 없음'); j = None
+            except Exception as e:
+                why.append(f'{type(e).__name__}: {str(e)[:80]}'); j = None
+            if i < 2:
+                time.sleep(3 * (i + 1))
+        if not (j or {}).get('daily'):
+            try:
+                r = subprocess.run(['curl', '-fsS', '--max-time', '25', u], capture_output=True, timeout=40)
+                if r.returncode == 0:
+                    j = json.loads(r.stdout.decode('utf-8'))
+                else:
+                    why.append(f'curl {r.returncode}: {r.stderr.decode("utf-8", "replace").strip()[:80]}')
+            except Exception as e:
+                why.append(f'curl {type(e).__name__}: {str(e)[:80]}')
         try:
             dl = (j or {}).get('daily') or {}
             if not dl:
@@ -1251,6 +1346,8 @@ def _plan_weather(P, days=4):
                          for i, d in enumerate(dl.get('time') or [])]
         except Exception as e:
             out[city] = None
+            if err is not None:
+                err[city] = ' / '.join(why[-3:]) or f'{type(e).__name__}'
     return out
 
 
@@ -1316,12 +1413,22 @@ def cmd_plancontext(a):
         except Exception:
             pass
     P = people_of(a.repo, aes)
+    werr = {}
+    weather = _plan_weather(P, 4, werr)
+    plx_age = {w: (t0 - _dt.date.fromisoformat(v['d'])).days if re.match(r'^20\d{2}-\d{2}-\d{2}$', str(v.get('d'))) else None for w, v in plx.items()}
+    # v70.1 빈칸이 왜 비었는지 편지 쓰는 쪽이 바로 알게
+    why = {'plx': '앱이 하루 한 번(앱을 열 때) 남겨요. plxAge 가 1보다 크면 그 폰이 그동안 앱을 안 연 거예요(앱 고장 아님).',
+           'recent': '둘이 같이 보는 기록만 읽어요(나만 보기는 안 읽음). 비면 지난 7일 같이 남긴 기록이 없는 거예요.',
+           'meet': '앱 기록 탭 달력에서 날짜를 꾹 눌러 ♥ 데이트 하는 날을 정해야 생겨요. 비면 아직 안 정한 거예요.',
+           'weather': '; '.join(f'{c}: {e}' for c, e in werr.items()) or ''}
     ctx = {'v': 1, 'today': today, 'days': days, 'people': {w: {'n': v['n'], 'city': v['city']} for w, v in P.items()},
-           'plx': plx, 'recent': recent, 'meet': meet, 'exams': exams, 'news': news[:24], 'weather': _plan_weather(P, 4)}
+           'plx': plx, 'plxAge': plx_age, 'recent': recent, 'meet': meet, 'exams': exams, 'news': news[:24], 'weather': weather,
+           **({'weatherErr': werr} if werr else {}), 'why': why}
     with open(a.out, 'w', encoding='utf-8') as f:
         json.dump(ctx, f, ensure_ascii=False, indent=1)
-    print(json.dumps({'ok': True, 'out': a.out, 'plx': {w: v.get('d') for w, v in plx.items()}, 'recent': {w: len(v) for w, v in recent.items()},
-                      'meet': meet[:1], 'news': len(news), 'weather': {c: bool(v) for c, v in ctx['weather'].items()}, 'badFiles': len(bad)}, ensure_ascii=False))
+    print(json.dumps({'ok': True, 'out': a.out, 'plx': {w: v.get('d') for w, v in plx.items()}, 'plxAge': plx_age, 'recent': {w: len(v) for w, v in recent.items()},
+                      'meet': meet[:1], 'news': len(news), 'weather': {c: bool(v) for c, v in ctx['weather'].items()}, **({'weatherErr': werr} if werr else {}),
+                      'badFiles': len(bad)}, ensure_ascii=False))
 
 
 def _plan_txt(v, n, errs, where):
@@ -1680,7 +1787,7 @@ FRESH_AP_MAX = 3000        # 풀마다 fresh 로 붙인 전체
 FRESH_BAL_R = 18           # 밸런스 「고른 이유」 보기 한 개 길이
 COURSE_K = ('see', 'do', 'eat', 'cafe', 'stay', 'move')
 DATE_ENUM = {'io': ('both', 'in', 'out'), 'time': ('1h', 'day', 'half', 'trip'), 'wx': ('any', 'clear', 'cold', 'hot', 'rain'), 'when': ('any', 'day', 'night', 'weekend'),
-             'tag': ('계절', '공연', '만들기', '맛집', '바다', '산책', '액티비티', '야경', '여행', '장거리', '전시', '집데이트', '축제', '카페'), 'reg': ('', '청주', '광주', '충청', '호남', '중간')}
+             'tag': ('계절', '공연', '만들기', '맛집', '바다', '산책', '액티비티', '야경', '여행', '장거리', '전시', '집데이트', '축제', '카페'), 'reg': ('', '청주', '서울', '대전', '세종', '천안', '충청', '수도권', '강원', '호남', '영남', '중간', '전국')}
 
 
 def fresh_check(f, today):
@@ -1754,8 +1861,8 @@ def fresh_check(f, today):
             errs.append(w + ': id는 crf-로 시작'); continue
         if c['id'] in seen:
             errs.append(w + ': id 겹침'); continue
-        if not isinstance(c.get('t'), str) or not 2 <= len(c['t']) <= 14 or c.get('reg') not in ('충청', '호남', '중간', '전국') or c.get('days') not in (1, 2):
-            errs.append(w + ': t(14자)·reg(충청|호남|중간|전국)·days(1|2) 확인'); continue
+        if not isinstance(c.get('t'), str) or not 2 <= len(c['t']) <= 14 or c.get('reg') not in ('수도권', '강원', '충청', '호남', '영남', '제주', '중간', '전국') or c.get('days') not in (1, 2):
+            errs.append(w + ': t(14자)·reg(권역|중간|전국)·days(1|2) 확인'); continue
         st = c.get('steps')
         if not isinstance(st, list) or not 3 <= len(st) <= 12:
             errs.append(w + ': steps 3~12개'); continue
@@ -1924,7 +2031,7 @@ WK_RE = re.compile(r'^(\d{4})-W(\d{2})$')
 DOWS = ('일', '월', '화', '수', '목', '금', '토')
 TR_REGIONS = ('일본', '동남아', '중화권', '아시아', '유럽', '북유럽', '북미', '대양주', '중동', '아프리카', '중남미')
 TR_STEP_K = ('see', 'do', 'eat', 'cafe', 'stay', 'move', 'fly')
-TR_FROM_K = ('청주', '광주/무안', '인천', '김포')
+TR_FROM_K = ('청주', '인천', '김포')
 # robots.txt 로 자동 수집을 막은 곳(v9·v15 조사 원칙) — 출처·링크로 들어 있으면 거부
 BLOCKED_SRC = re.compile(r'(?i)(?<![a-z0-9-])(?:[a-z0-9-]+\.)*(?:kakao\.com|kko\.to|kakaocdn\.net|brunch\.co\.kr|naver\.com|naver\.me|catchtable\.(?:co\.kr|net)|bluer\.co\.kr|'
                          r'klook\.com|kkday\.com|airport\.co\.kr|skyscanner\.[a-z.]+)(?![a-z0-9-])'
@@ -2182,7 +2289,7 @@ def _trip_check(t, w, errs):
     if not isinstance(fly, dict) or not isinstance(fly.get('from'), dict) or not fly['from'] or any(k not in TR_FROM_K for k in fly['from']) \
             or not all(_txt(v, 1, 160) or (isinstance(v, dict) and len(json.dumps(v, ensure_ascii=False)) <= 300) for v in fly['from'].values()) \
             or not (_txt(fly.get('hours'), 1, 60) or isinstance(fly.get('hours'), (int, float))) or len(str(fly.get('airport') or '')) > 100:
-        errs.append(w + ': fly {from{청주·광주/무안·인천·김포: 160자}, hours(60자), airport(100자)} 확인'); return None
+        errs.append(w + ': fly {from{청주·인천·김포: 160자}, hours(60자), airport(100자)} 확인'); return None
     cost = _cost_check(t.get('cost'), w, errs, True)
     if not cost:
         return None
@@ -2641,12 +2748,13 @@ def main():
         p.add_argument('--base', help='앱 소스 content/books.json·trips.json (unpacksrc 로 푼 것) — id·이름 겹침 검사'); p.add_argument('--sync', help='syncclone 한 폴더 — 두 사람 기록이 가리키는 것은 정리하지 않음')
     p = sp.add_parser('homeseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--in', required=True)
     p = sp.add_parser('fcv'); p.add_argument('--settings', default='env'); p.add_argument('--repo', required=True); p.add_argument('--sync', required=True); p.add_argument('--out', required=True); p.add_argument('--who', choices=('j', 'h', 'both'), default='j')
+    p = sp.add_parser('shiftseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--in', required=True)
     p = sp.add_parser('fireseal'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--in', required=True); p.add_argument('--plan')
     p = sp.add_parser('notify'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--to', choices=('j', 'h', 'both'), default='both'); p.add_argument('--title'); p.add_argument('--msg', required=True)
     p = sp.add_parser('packsrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--src', required=True)
     p = sp.add_parser('unpacksrc'); p.add_argument('--settings', required=True); p.add_argument('--repo', required=True); p.add_argument('--out', required=True)
     a = ap.parse_args()
-    {'plancontext': cmd_plancontext, 'planseal': cmd_planseal, 'reportcontext': cmd_reportcontext, 'repseal': cmd_repseal, 'balinseal': cmd_balinseal, 'homeseal': cmd_homeseal, 'fireseal': cmd_fireseal, 'fcv': cmd_fcv, 'libopen': cmd_libopen, 'libseal': cmd_libseal, 'worldopen': cmd_worldopen, 'worldseal': cmd_worldseal, 'plcopen': cmd_plcopen, 'plcseal': cmd_plcseal, 'mvwopen': cmd_mvwopen, 'mvwseal': cmd_mvwseal, 'notify': cmd_notify, 'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'gigimg': cmd_gigimg, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'apuse': cmd_apuse, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
+    {'plancontext': cmd_plancontext, 'planseal': cmd_planseal, 'reportcontext': cmd_reportcontext, 'repseal': cmd_repseal, 'balinseal': cmd_balinseal, 'homeseal': cmd_homeseal, 'fireseal': cmd_fireseal, 'shiftseal': cmd_shiftseal, 'fcv': cmd_fcv, 'libopen': cmd_libopen, 'libseal': cmd_libseal, 'worldopen': cmd_worldopen, 'worldseal': cmd_worldseal, 'plcopen': cmd_plcopen, 'plcseal': cmd_plcseal, 'mvwopen': cmd_mvwopen, 'mvwseal': cmd_mvwseal, 'notify': cmd_notify, 'newsopen': cmd_newsopen, 'newsseal': cmd_newsseal, 'gigimg': cmd_gigimg, 'newswants': cmd_newswants, 'freshopen': cmd_freshopen, 'freshseal': cmd_freshseal, 'apuse': cmd_apuse, 'packsrc': cmd_packsrc, 'unpacksrc': cmd_unpacksrc, 'settings': cmd_settings, 'clone': cmd_clone, 'open': cmd_open, 'seal': cmd_seal, 'pages': cmd_pages,
      'keyfile': cmd_keyfile, 'push': cmd_push, 'cfg': cmd_cfg, 'people': cmd_people, 'syncinit': cmd_syncinit, 'syncclone': cmd_syncclone,
      'syncpull': cmd_syncpull, 'syncclean': cmd_syncclean}[a.cmd](a)
 
